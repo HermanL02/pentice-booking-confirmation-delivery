@@ -1,3 +1,4 @@
+import './instrument';
 import { ConfigType } from '@nestjs/config';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';

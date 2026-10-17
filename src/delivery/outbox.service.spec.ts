@@ -1,4 +1,5 @@
 import type { ConfigType } from '@nestjs/config';
+import type { EventEmitter2 } from '@nestjs/event-emitter';
 import type { deliveryConfig } from '../config/delivery.config';
 import {
   emptyState,
@@ -7,6 +8,7 @@ import {
   type StoreState,
 } from '../storage/storage.port';
 import { BackoffPolicy } from './backoff.policy';
+import { DELIVERY_ATTENTION } from './events/delivery-attention.event';
 import { newOutboxRecord } from './outbox.record';
 import { OutboxService } from './outbox.service';
 
@@ -36,6 +38,7 @@ const at = (offsetMs: number): string =>
 describe('OutboxService', () => {
   let storage: InMemoryStorage;
   let service: OutboxService;
+  let events: { emit: jest.Mock };
 
   const seed = (
     deliveryId: string,
@@ -61,10 +64,12 @@ describe('OutboxService', () => {
     const cfg = { attentionAfterAttempts: 3 } as ConfigType<
       typeof deliveryConfig
     >;
+    events = { emit: jest.fn() };
     service = new OutboxService(
       storage,
       new BackoffPolicy(BASE_MS, MAX_MS, () => 1),
       cfg,
+      events as unknown as EventEmitter2,
     );
   });
 
@@ -122,6 +127,7 @@ describe('OutboxService', () => {
       storage,
       new BackoffPolicy(BASE_MS, MAX_MS, () => 0),
       { attentionAfterAttempts: 3 } as ConfigType<typeof deliveryConfig>,
+      events as unknown as EventEmitter2,
     );
     seed('d1', { leaseUntil: at(-1), nextAttemptAt: at(-60_000) });
 
@@ -179,6 +185,40 @@ describe('OutboxService', () => {
     const third = await service.recordOutcome('d1', 'failed', NOW);
     expect(third?.attempts).toBe(3);
     expect(third?.needsAttention).toBe(true);
+  });
+
+  it('emits delivery.attention exactly once when crossing the threshold', async () => {
+    seed('d1');
+    const persistedAtEmit: boolean[] = [];
+    events.emit.mockImplementation(() => {
+      persistedAtEmit.push(storage.state.outbox.d1.needsAttention);
+      return true;
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await service.recordOutcome('d1', 'failed', NOW);
+    }
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit).toHaveBeenCalledWith(DELIVERY_ATTENTION, {
+      deliveryId: 'd1',
+      attempts: 3,
+    });
+    // Emitted only after the flag was persisted.
+    expect(persistedAtEmit).toEqual([true]);
+  });
+
+  it('claimDue emits delivery.attention when a lease expiry crosses the threshold', async () => {
+    seed('d1', { attempts: 2, leaseUntil: at(-1) });
+    seed('d2', { attempts: 5, needsAttention: true, leaseUntil: at(-1) });
+
+    await service.claimDue(NOW, LEASE_MS);
+
+    expect(events.emit).toHaveBeenCalledTimes(1);
+    expect(events.emit).toHaveBeenCalledWith(DELIVERY_ATTENTION, {
+      deliveryId: 'd1',
+      attempts: 3,
+    });
   });
 
   it('recordOutcome caps history at 50', async () => {

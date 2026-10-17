@@ -1,7 +1,9 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, type ConfigType } from '@nestjs/config';
+import { APP_FILTER } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
+import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { AppController } from './app.controller';
@@ -18,8 +20,12 @@ import { GuestDeviceModule } from './guest-device/guest-device.module';
 import { HealthModule } from './health/health.module';
 import { StorageModule } from './storage/storage.module';
 
+// Sentry is wired only when a DSN is configured (see instrument.ts).
+const sentryEnabled = Boolean(process.env.SENTRY_DSN);
+
 @Module({
   imports: [
+    ...(sentryEnabled ? [SentryModule.forRoot()] : []),
     ConfigModule.forRoot({
       isGlobal: true,
       validationSchema: envSchema,
@@ -52,6 +58,9 @@ import { StorageModule } from './storage/storage.module';
     BookingsModule,
   ],
   controllers: [AppController],
+  providers: sentryEnabled
+    ? [{ provide: APP_FILTER, useClass: SentryGlobalFilter }]
+    : [],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
