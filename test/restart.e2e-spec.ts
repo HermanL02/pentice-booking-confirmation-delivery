@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './helpers/create-test-app';
-import { readOutbox } from './helpers/ops';
+import { getDelivery } from './helpers/ops';
 import { waitFor } from './helpers/wait-for';
 
 describe('restart (e2e)', () => {
@@ -25,7 +25,8 @@ describe('restart (e2e)', () => {
   it('a pending delivery is delivered once by the next process on the same data file and port', async () => {
     const dataFile = join(dataDir, 'store.json');
     first = await createTestApp({ DATA_FILE: dataFile });
-    const port = new URL(first.baseUrl).port;
+    const { baseUrl } = first;
+    const port = new URL(baseUrl).port;
 
     await request(first.baseUrl)
       .put('/guest-device/status')
@@ -37,10 +38,10 @@ describe('restart (e2e)', () => {
       .expect(202);
     const deliveryId = res.body.deliveryId as string;
     await waitFor(
-      async () => (await readOutbox(dataFile, deliveryId)).attempts >= 1,
+      async () => (await getDelivery(baseUrl, deliveryId)).attempts >= 1,
       { label: 'attempts >= 1' },
     );
-    expect((await readOutbox(dataFile, deliveryId)).status).toBe('pending');
+    expect((await getDelivery(baseUrl, deliveryId)).status).toBe('pending');
 
     const closing = first;
     first = undefined;
@@ -50,7 +51,7 @@ describe('restart (e2e)', () => {
     expect(second.baseUrl).toBe(closing.baseUrl);
 
     await waitFor(
-      async () => (await readOutbox(dataFile, deliveryId)).status === 'acked',
+      async () => (await getDelivery(baseUrl, deliveryId)).status === 'acked',
       { label: 'acked after restart' },
     );
     const inbox = await request(second.baseUrl)

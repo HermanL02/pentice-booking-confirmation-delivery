@@ -4,12 +4,13 @@ import { deliveryConfig } from '../config/delivery.config';
 import { AckController } from './ack.controller';
 import { BackoffPolicy } from './backoff.policy';
 import { DispatcherService } from './dispatcher.service';
+import { OpsController } from './ops.controller';
 import { OutboxService } from './outbox.service';
 import { DELIVERY_TRANSPORT } from './transport/delivery-transport.port';
 import { deliveryTransportProvider } from './transport/transport.provider';
 
 @Module({
-  controllers: [AckController],
+  controllers: [AckController, OpsController],
   providers: [
     {
       provide: BackoffPolicy,
