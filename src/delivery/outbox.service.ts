@@ -92,6 +92,23 @@ export class OutboxService {
     });
   }
 
+  /** Returns claimed-but-unsent records to the queue without counting an attempt. */
+  releaseLease(deliveryIds: string[], now: Date): Promise<number> {
+    return this.storage.mutate((draft) => {
+      let released = 0;
+      for (const id of deliveryIds) {
+        const record = draft.outbox[id];
+        if (record?.status !== 'pending' || record.leaseUntil === null) {
+          continue;
+        }
+        record.leaseUntil = null;
+        record.nextAttemptAt = now.toISOString();
+        released += 1;
+      }
+      return released;
+    });
+  }
+
   ack(deliveryId: string, ackToken: string, now: Date): Promise<AckResult> {
     return this.storage.mutate((draft): AckResult => {
       const record = draft.outbox[deliveryId];

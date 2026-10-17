@@ -57,34 +57,15 @@ export class DispatcherService
     if (this.ticking || this.stopping) return;
     this.ticking = true;
     try {
-      const now = this.clock.now();
-      this.lastTick = now;
-      const due = await this.outbox.claimDue(now, this.cfg.leaseMs);
-      let next = 0;
-      const worker = async (): Promise<void> => {
-        while (next < due.length && !this.stopping) {
-          await this.track(due[next++]);
-        }
-      };
-      await Promise.all(
-        Array.from({ length: Math.min(MAX_CONCURRENCY, due.length) }, worker),
-      );
-    } catch (err) {
-      this.logger.error(`tick failed: ${describe(err)}`);
+      await this.track(this.runTick());
     } finally {
       this.ticking = false;
     }
   }
 
-  async dispatchOne(deliveryId: string): Promise<void> {
-    if (this.stopping) return;
-    const record = await this.outbox.claimOne(
-      deliveryId,
-      this.clock.now(),
-      this.cfg.leaseMs,
-    );
-    if (record === null) return;
-    await this.track(record);
+  dispatchOne(deliveryId: string): Promise<void> {
+    if (this.stopping) return Promise.resolve();
+    return this.track(this.runDispatchOne(deliveryId));
   }
 
   /** Must never reject: the event is emitted synchronously after persisting a booking. */
@@ -93,8 +74,9 @@ export class DispatcherService
     try {
       await this.dispatchOne(e.deliveryId);
     } catch (err) {
+      const id = (e as BookingCreatedEvent | undefined)?.deliveryId;
       this.logger.error(
-        `immediate dispatch failed deliveryId=${e.deliveryId}: ${describe(err)}`,
+        `immediate dispatch failed deliveryId=${id}: ${describe(err)}`,
       );
     }
   }
@@ -120,7 +102,7 @@ export class DispatcherService
     try {
       if (await Promise.race([drained, timedOut])) {
         this.logger.warn(
-          `shutdown drain limit reached with ${this.inFlight.size} send(s) still in flight`,
+          `shutdown drain limit reached with ${this.inFlight.size} dispatch(es) still in flight`,
         );
       }
     } finally {
@@ -128,10 +110,60 @@ export class DispatcherService
     }
   }
 
-  private track(record: OutboxRecord): Promise<void> {
-    const p = this.process(record).finally(() => this.inFlight.delete(p));
+  /** Every tick and dispatchOne is tracked whole, so the drain also covers pending claims. */
+  private track(op: Promise<void>): Promise<void> {
+    const p = op.finally(() => this.inFlight.delete(p));
     this.inFlight.add(p);
     return p;
+  }
+
+  private async runTick(): Promise<void> {
+    try {
+      const now = this.clock.now();
+      this.lastTick = now;
+      const due = await this.outbox.claimDue(now, this.cfg.leaseMs);
+      let next = 0;
+      const worker = async (): Promise<void> => {
+        while (next < due.length && !this.stopping) {
+          await this.process(due[next++]);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(MAX_CONCURRENCY, due.length) }, worker),
+      );
+      if (next < due.length) {
+        await this.release(due.slice(next).map((r) => r.deliveryId));
+      }
+    } catch (err) {
+      this.logger.error(`tick failed: ${describe(err)}`);
+    }
+  }
+
+  private async runDispatchOne(deliveryId: string): Promise<void> {
+    const record = await this.outbox.claimOne(
+      deliveryId,
+      this.clock.now(),
+      this.cfg.leaseMs,
+    );
+    if (record === null) return;
+    if (this.stopping) {
+      await this.release([deliveryId]);
+      return;
+    }
+    await this.process(record);
+  }
+
+  /** Claimed but never sent because we are stopping: back to the queue, no attempt charged. */
+  private async release(deliveryIds: string[]): Promise<void> {
+    try {
+      const count = await this.outbox.releaseLease(
+        deliveryIds,
+        this.clock.now(),
+      );
+      this.logger.log(`released ${count} unsent lease(s) on shutdown`);
+    } catch (err) {
+      this.logger.error(`releasing unsent leases failed: ${describe(err)}`);
+    }
   }
 
   /** Never rejects, so one bad record cannot abort a tick. */

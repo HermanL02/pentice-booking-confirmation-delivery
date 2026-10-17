@@ -38,6 +38,7 @@ describe('DispatcherService', () => {
     claimDue: jest.Mock;
     claimOne: jest.Mock;
     recordOutcome: jest.Mock;
+    releaseLease: jest.Mock;
   };
   let transport: { send: jest.Mock };
   let registry: {
@@ -75,6 +76,9 @@ describe('DispatcherService', () => {
       recordOutcome: jest
         .fn()
         .mockImplementation((id: string) => Promise.resolve(record(id))),
+      releaseLease: jest
+        .fn()
+        .mockImplementation((ids: string[]) => Promise.resolve(ids.length)),
     };
     transport = { send: jest.fn().mockResolvedValue('sent') };
     registry = {
@@ -220,6 +224,9 @@ describe('DispatcherService', () => {
     await expect(
       service.onBookingCreated({ deliveryId: 'd1' }),
     ).resolves.toBeUndefined();
+    await expect(
+      service.onBookingCreated(undefined as unknown as { deliveryId: string }),
+    ).resolves.toBeUndefined();
   });
 
   it('onApplicationBootstrap registers the interval and ticks once', async () => {
@@ -292,9 +299,55 @@ describe('DispatcherService', () => {
 
       expect(sendSettled()).toBe(false);
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('with 1 send(s) still in flight'),
+        expect.stringContaining('with 1 dispatch(es) still in flight'),
       );
       await jest.advanceTimersByTimeAsync(30);
+    });
+
+    it('onModuleDestroy waits for a dispatchOne that is still claiming', async () => {
+      const claim = deferred<OutboxRecord | null>();
+      outbox.claimOne.mockReturnValue(claim.promise);
+      const service = build();
+      let done = false;
+
+      const dispatched = service.dispatchOne('d1');
+      const destroyed = service.onModuleDestroy().then(() => {
+        done = true;
+      });
+      await new Promise((r) => setImmediate(r));
+      expect(done).toBe(false);
+      claim.resolve(record('d1'));
+      await destroyed;
+      await dispatched;
+
+      expect(transport.send).not.toHaveBeenCalled();
+      expect(outbox.releaseLease).toHaveBeenCalledWith(['d1'], NOW);
+    });
+
+    it('stopping releases claimed records that were never sent', async () => {
+      // 12 claimed: the first 10 occupy every worker slot, so 2 are never sent.
+      const ids = Array.from({ length: 12 }, (_, i) => `d${i}`);
+      outbox.claimDue.mockResolvedValue(ids.map(record));
+      const sends: Array<() => void> = [];
+      transport.send.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            sends.push(() => resolve('sent'));
+          }),
+      );
+      const service = build();
+
+      const ticked = service.tick();
+      await new Promise((r) => setImmediate(r));
+      expect(transport.send).toHaveBeenCalledTimes(10);
+      const destroyed = service.onModuleDestroy();
+      for (const release of sends) release();
+      await destroyed;
+      await ticked;
+
+      expect(transport.send).toHaveBeenCalledTimes(10);
+      expect(outbox.releaseLease).toHaveBeenCalledTimes(1);
+      expect(outbox.releaseLease).toHaveBeenCalledWith(['d10', 'd11'], NOW);
     });
 
     it('stops claiming once stopping', async () => {

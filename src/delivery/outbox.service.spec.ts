@@ -251,4 +251,32 @@ describe('OutboxService', () => {
     expect(storage.state.outbox.d1.leaseUntil).toBeNull();
     await expect(service.retryNow('missing', NOW)).resolves.toBe(false);
   });
+
+  it('releaseLease clears the lease without counting an attempt', async () => {
+    seed('d1', { leaseUntil: at(LEASE_MS), nextAttemptAt: at(-1_000) });
+
+    await expect(service.releaseLease(['d1'], NOW)).resolves.toBe(1);
+
+    const r = storage.state.outbox.d1;
+    expect(r.attempts).toBe(0);
+    expect(r.history).toEqual([]);
+    expect(r.leaseUntil).toBeNull();
+    expect(r.nextAttemptAt).toBe(NOW.toISOString());
+  });
+
+  it('releaseLease ignores acked or unleased records', async () => {
+    seed('acked', {
+      status: 'acked',
+      leaseUntil: at(LEASE_MS),
+      nextAttemptAt: at(-1_000),
+    });
+    seed('free', { nextAttemptAt: at(5_000) });
+
+    await expect(
+      service.releaseLease(['acked', 'free', 'missing'], NOW),
+    ).resolves.toBe(0);
+
+    expect(storage.state.outbox.acked.leaseUntil).toBe(at(LEASE_MS));
+    expect(storage.state.outbox.free.nextAttemptAt).toBe(at(5_000));
+  });
 });
