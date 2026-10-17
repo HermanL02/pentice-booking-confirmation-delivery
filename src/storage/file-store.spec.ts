@@ -108,6 +108,18 @@ describe('FileStore', () => {
     ).toHaveLength(20);
   });
 
+  it('a value returned from mutate does not alias the cache', async () => {
+    const store = await open();
+
+    const b = await store.mutate((d) => {
+      d.bookings['abcde'] = { ...booking, reservationId: 'abcde' };
+      return d.bookings['abcde'];
+    });
+    b.guest = 'mallory@example.com';
+
+    expect((await store.read()).bookings['abcde'].guest).toBe(booking.guest);
+  });
+
   it('read returns a copy', async () => {
     const store = await open();
 

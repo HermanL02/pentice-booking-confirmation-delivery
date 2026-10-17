@@ -38,9 +38,7 @@ export class FileStore implements StoragePort, OnModuleInit {
       raw = await this.fs.readFile(this.filePath, 'utf8');
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-      const initial = emptyState();
-      await this.persist(initial);
-      this.state = initial;
+      this.state = await this.persist(emptyState());
       return;
     }
     this.state = this.parse(raw);
@@ -56,8 +54,7 @@ export class FileStore implements StoragePort, OnModuleInit {
     return this.mutex.runExclusive(async () => {
       const draft = structuredClone(this.state);
       const result = await fn(draft);
-      await this.persist(draft);
-      this.state = draft;
+      this.state = await this.persist(draft);
       return result;
     });
   }
@@ -78,9 +75,14 @@ export class FileStore implements StoragePort, OnModuleInit {
     return new Error(`Store file ${this.filePath} is corrupt: ${reason}`);
   }
 
-  private async persist(state: StoreState): Promise<void> {
+  /**
+   * Atomically writes `state` and returns a fresh copy parsed from the exact
+   * bytes written, so the cache matches the file and never aliases `state`.
+   */
+  private async persist(state: StoreState): Promise<StoreState> {
+    const serialized = JSON.stringify(state, null, 2);
     const tmp = `${this.filePath}.tmp`;
-    await this.fs.writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
+    await this.fs.writeFile(tmp, serialized, 'utf8');
     const handle = await this.fs.open(tmp, 'r+');
     try {
       await handle.sync();
@@ -88,6 +90,7 @@ export class FileStore implements StoragePort, OnModuleInit {
       await handle.close();
     }
     await this.fs.rename(tmp, this.filePath);
+    return JSON.parse(serialized) as StoreState;
   }
 
   private async delay(): Promise<void> {
