@@ -14,6 +14,7 @@ describe('envSchema', () => {
       DELIVERY_TICK_MS: 1000,
       DELIVERY_BACKOFF_MAX_MS: 300000,
       DATA_FILE: './data/store.json',
+      THROTTLE_LIMIT_PER_MINUTE: 100,
     });
   });
 

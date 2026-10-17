@@ -24,6 +24,7 @@ export const envSchema = Joi.object({
   DELIVERY_ATTENTION_AFTER_ATTEMPTS: positiveInt(10),
   SHUTDOWN_DRAIN_MS: positiveInt(10000),
   LOG_LEVEL: Joi.string().default('info'),
+  THROTTLE_LIMIT_PER_MINUTE: positiveInt(100),
   SENTRY_DSN: optionalString(),
   BETTERSTACK_SOURCE_TOKEN: optionalString(),
   BETTERSTACK_INGEST_HOST: Joi.string().default(

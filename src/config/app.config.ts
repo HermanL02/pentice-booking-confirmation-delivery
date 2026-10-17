@@ -8,6 +8,7 @@ export const appConfig = registerAs('app', () => ({
   storageLatencyMs: Number(process.env.STORAGE_LATENCY_MS),
   opsApiKey: process.env.OPS_API_KEY as string,
   logLevel: process.env.LOG_LEVEL as string,
+  throttleLimitPerMinute: Number(process.env.THROTTLE_LIMIT_PER_MINUTE),
   sentryDsn: process.env.SENTRY_DSN,
   betterstackSourceToken: process.env.BETTERSTACK_SOURCE_TOKEN,
   betterstackIngestHost: process.env.BETTERSTACK_INGEST_HOST as string,

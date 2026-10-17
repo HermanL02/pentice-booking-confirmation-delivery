@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { AppController } from './app.controller';
+import { BookingsModule } from './bookings/bookings.module';
 import { CommonModule } from './common/common.module';
 import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
 import { buildPinoTransport } from './common/logger.transport';
@@ -35,10 +36,16 @@ import { StorageModule } from './storage/storage.module';
     }),
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 20 }]),
+    ThrottlerModule.forRootAsync({
+      inject: [appConfig.KEY],
+      useFactory: (cfg: ConfigType<typeof appConfig>) => [
+        { ttl: 60_000, limit: cfg.throttleLimitPerMinute },
+      ],
+    }),
     CommonModule,
     HealthModule,
     StorageModule,
+    BookingsModule,
   ],
   controllers: [AppController],
 })
