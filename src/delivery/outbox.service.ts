@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { deliveryConfig } from '../config/delivery.config';
 import {
   STORAGE,
@@ -9,6 +10,10 @@ import {
   type StoragePort,
 } from '../storage/storage.port';
 import { BackoffPolicy } from './backoff.policy';
+import {
+  DELIVERY_ATTENTION,
+  type DeliveryAttentionEvent,
+} from './events/delivery-attention.event';
 
 const HISTORY_CAP = 50;
 
@@ -28,21 +33,25 @@ export class OutboxService {
     private readonly backoff: BackoffPolicy,
     @Inject(deliveryConfig.KEY)
     private readonly cfg: ConfigType<typeof deliveryConfig>,
+    private readonly events: EventEmitter2,
   ) {}
 
-  claimDue(now: Date, leaseMs: number): Promise<OutboxRecord[]> {
+  async claimDue(now: Date, leaseMs: number): Promise<OutboxRecord[]> {
     const nowMs = now.getTime();
-    return this.storage.mutate((draft) => {
+    const { claimed, attention } = await this.storage.mutate((draft) => {
       const records = Object.values(draft.outbox);
       // Expired here => never claimed in this call, even if backoff is 0.
       const expired = new Set<string>();
+      const attention: DeliveryAttentionEvent[] = [];
       for (const record of records) {
         if (
           record.status === 'pending' &&
           record.leaseUntil !== null &&
           Date.parse(record.leaseUntil) < nowMs
         ) {
-          this.applyOutcome(record, 'lease-expired', now);
+          if (this.applyOutcome(record, 'lease-expired', now)) {
+            attention.push(attentionEvent(record));
+          }
           expired.add(record.deliveryId);
         }
       }
@@ -56,8 +65,10 @@ export class OutboxService {
           claimed.push(record);
         }
       }
-      return claimed;
+      return { claimed, attention };
     });
+    for (const e of attention) this.events.emit(DELIVERY_ATTENTION, e);
+    return claimed;
   }
 
   claimOne(
@@ -76,20 +87,26 @@ export class OutboxService {
     });
   }
 
-  recordOutcome(
+  async recordOutcome(
     deliveryId: string,
     outcome: OutboxOutcome,
     now: Date,
     error?: string,
   ): Promise<OutboxRecord | null> {
-    return this.storage.mutate((draft) => {
+    const result = await this.storage.mutate((draft) => {
       const record = draft.outbox[deliveryId];
       if (record === undefined || record.status === 'acked') {
         return null;
       }
-      this.applyOutcome(record, outcome, now, error);
-      return record;
+      const flagged = this.applyOutcome(record, outcome, now, error);
+      return { record, flagged };
     });
+    if (result === null) return null;
+    // After mutate resolves, so the flag is persisted before anyone is alerted.
+    if (result.flagged) {
+      this.events.emit(DELIVERY_ATTENTION, attentionEvent(result.record));
+    }
+    return result.record;
   }
 
   /** Returns claimed-but-unsent records to the queue without counting an attempt. */
@@ -157,12 +174,13 @@ export class OutboxService {
     );
   }
 
+  /** Returns true when this outcome is the one that flags the record for attention. */
   private applyOutcome(
     record: OutboxRecord,
     outcome: OutboxOutcome,
     now: Date,
     error?: string,
-  ): void {
+  ): boolean {
     const iso = now.toISOString();
     record.attempts += 1;
     record.leaseUntil = null;
@@ -179,10 +197,19 @@ export class OutboxService {
       record.history = record.history.slice(-HISTORY_CAP);
     }
     if (outcome === 'sent') record.lastSentAt = iso;
-    if (record.attempts >= this.cfg.attentionAfterAttempts) {
+    if (
+      !record.needsAttention &&
+      record.attempts >= this.cfg.attentionAfterAttempts
+    ) {
       record.needsAttention = true;
+      return true;
     }
+    return false;
   }
+}
+
+function attentionEvent(record: OutboxRecord): DeliveryAttentionEvent {
+  return { deliveryId: record.deliveryId, attempts: record.attempts };
 }
 
 function tokensMatch(expected: string, given: string): boolean {

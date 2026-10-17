@@ -1,7 +1,6 @@
 import request from 'supertest';
 import { createTestApp, type TestApp } from './helpers/create-test-app';
-import type { OutboxRecord } from '@/storage/storage.port';
-import { readOutbox, readState } from './helpers/ops';
+import { getDelivery, readAckToken, type DeliveryView } from './helpers/ops';
 import { waitFor } from './helpers/wait-for';
 
 const settle = (ms: number) =>
@@ -9,21 +8,21 @@ const settle = (ms: number) =>
 
 /** Polls the outbox record until `predicate` holds and returns that record. */
 const waitForRecord = async (
-  dataFile: string,
+  baseUrl: string,
   deliveryId: string,
-  predicate: (r: OutboxRecord) => boolean,
+  predicate: (r: DeliveryView) => boolean,
   label: string,
-): Promise<OutboxRecord> => {
-  let match: OutboxRecord | undefined;
+): Promise<DeliveryView> => {
+  let match: DeliveryView | undefined;
   await waitFor(
     async () => {
-      const r = await readOutbox(dataFile, deliveryId);
+      const r = await getDelivery(baseUrl, deliveryId);
       if (predicate(r)) match = r;
       return match !== undefined;
     },
     { label },
   );
-  return match as OutboxRecord;
+  return match as DeliveryView;
 };
 
 describe('delivery (e2e)', () => {
@@ -52,7 +51,9 @@ describe('delivery (e2e)', () => {
     return { reservationId, deliveryId: res.body.deliveryId as string };
   };
 
-  const outbox = (deliveryId: string) => readOutbox(t.dataFile, deliveryId);
+  const outbox = (deliveryId: string) => getDelivery(t.baseUrl, deliveryId);
+  const ackTokenOf = (deliveryId: string) =>
+    readAckToken(t.dataFile, deliveryId);
 
   const ack = (deliveryId: string, ackToken: string) =>
     request(t.baseUrl).post(`/deliveries/${deliveryId}/ack`).send({ ackToken });
@@ -76,7 +77,7 @@ describe('delivery (e2e)', () => {
   });
 
   it('happy path: booking is delivered, acked once, GET /:code shows acked', async () => {
-    const { reservationId, deliveryId } = await book();
+    const { deliveryId } = await book();
 
     await waitForAcked(deliveryId);
 
@@ -90,8 +91,9 @@ describe('delivery (e2e)', () => {
     expect(record.attempts).toBeLessThanOrEqual(1);
     expect(record.history.length).toBeLessThanOrEqual(1);
 
-    const code = (await readState(t.dataFile)).reservationIndex[reservationId];
-    const res = await request(t.baseUrl).get(`/${code}`).expect(200);
+    const res = await request(t.baseUrl)
+      .get(`/${record.confirmationCode}`)
+      .expect(200);
     expect(res.body.delivery).toMatchObject({
       status: 'acked',
       ackedAt: expect.any(String),
@@ -104,7 +106,7 @@ describe('delivery (e2e)', () => {
     const { deliveryId } = await book();
 
     const pending = await waitForRecord(
-      t.dataFile,
+      t.baseUrl,
       deliveryId,
       (r) => r.attempts >= 3,
       'attempts >= 3',
@@ -127,7 +129,7 @@ describe('delivery (e2e)', () => {
     const { deliveryId } = await book();
 
     const pending = await waitForRecord(
-      t.dataFile,
+      t.baseUrl,
       deliveryId,
       (r) => r.history.filter((h) => h.outcome === 'sent').length >= 2,
       'two sent attempts',
@@ -146,7 +148,7 @@ describe('delivery (e2e)', () => {
   it('ack with wrong token is 401 and record stays pending', async () => {
     await setDevice(false);
     const { deliveryId } = await book();
-    const { ackToken } = await outbox(deliveryId);
+    const ackToken = await ackTokenOf(deliveryId);
 
     // Same length as a real token (64 chars) so it passes validation and is
     // rejected by the token comparison, not the DTO.
@@ -165,7 +167,7 @@ describe('delivery (e2e)', () => {
   it('ack twice is 200 then 200 already-acked', async () => {
     await setDevice(false);
     const { deliveryId } = await book();
-    const { ackToken } = await outbox(deliveryId);
+    const ackToken = await ackTokenOf(deliveryId);
 
     const first = await ack(deliveryId, ackToken).expect(200);
     const second = await ack(deliveryId, ackToken).expect(200);
@@ -187,7 +189,7 @@ describe('delivery (e2e)', () => {
     await waitFor(async () => (await outbox(deliveryId)).attempts >= 1, {
       label: 'attempts >= 1',
     });
-    const { ackToken } = await outbox(deliveryId);
+    const ackToken = await ackTokenOf(deliveryId);
 
     await ack(deliveryId, ackToken).expect(200, { status: 'acked' });
     const attemptsAtAck = (await outbox(deliveryId)).attempts;
@@ -227,7 +229,7 @@ describe('delivery to an unreachable device (e2e)', () => {
     const deliveryId = res.body.deliveryId as string;
 
     const record = await waitForRecord(
-      t.dataFile,
+      t.baseUrl,
       deliveryId,
       (r) => r.attempts >= 2,
       'attempts >= 2',

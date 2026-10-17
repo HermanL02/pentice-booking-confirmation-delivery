@@ -16,6 +16,7 @@ import { CLOCK, type Clock } from '../common/clock';
 import { appConfig } from '../config/app.config';
 import { deliveryConfig } from '../config/delivery.config';
 import type { OutboxOutcome, OutboxRecord } from '../storage/storage.port';
+import { MetricsService } from './metrics.service';
 import { OutboxService } from './outbox.service';
 import {
   DELIVERY_TRANSPORT,
@@ -47,6 +48,7 @@ export class DispatcherService
     @Inject(appConfig.KEY)
     private readonly app: ConfigType<typeof appConfig>,
     private readonly scheduler: SchedulerRegistry,
+    private readonly metrics: MetricsService,
   ) {}
 
   get lastTickAt(): Date | null {
@@ -121,6 +123,7 @@ export class DispatcherService
     try {
       const now = this.clock.now();
       this.lastTick = now;
+      this.metrics.recordTick(now);
       const due = await this.outbox.claimDue(now, this.cfg.leaseMs);
       let next = 0;
       const worker = async (): Promise<void> => {
@@ -178,7 +181,12 @@ export class DispatcherService
       if (result === 'handed-off') return;
       outcome = 'sent';
     } catch (err) {
-      outcome = err instanceof TransportError ? err.kind : 'failed';
+      if (err instanceof TransportError) {
+        outcome = err.kind;
+        this.metrics.incrementTransportFailures();
+      } else {
+        outcome = 'failed';
+      }
       error = describe(err);
     }
     const now = this.clock.now();
