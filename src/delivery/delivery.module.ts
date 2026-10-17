@@ -9,6 +9,8 @@ import { MetricsService } from './metrics.service';
 import { OpsController } from './ops.controller';
 import { OutboxService } from './outbox.service';
 import { DELIVERY_TRANSPORT } from './transport/delivery-transport.port';
+import { pubsubClientProvider } from './transport/pubsub.client';
+import { pubsubConsumerProvider } from './transport/pubsub.consumer';
 import { deliveryTransportProvider } from './transport/transport.provider';
 
 @Module({
@@ -22,8 +24,11 @@ import { deliveryTransportProvider } from './transport/transport.provider';
     },
     OutboxService,
     MetricsService,
+    pubsubClientProvider,
     deliveryTransportProvider,
     DispatcherService,
+    // No-ops unless PUBSUB_EMULATOR_HOST is set.
+    pubsubConsumerProvider,
   ],
   exports: [OutboxService, DELIVERY_TRANSPORT, DispatcherService],
 })
