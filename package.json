@@ -21,6 +21,8 @@
     "test:cov": "jest --coverage",
     "test:e2e": "jest --config ./test/jest-e2e.json --passWithNoTests",
     "demo": "tsx scripts/demo.ts",
+    "emulator": "bash scripts/emulator.sh",
+    "emulator:setup": "tsx scripts/setup-pubsub-emulator.ts",
     "prepare": "lefthook install"
   },
   "jest": {
@@ -44,6 +46,7 @@
     "testEnvironment": "node"
   },
   "dependencies": {
+    "@google-cloud/pubsub": "^5.3.1",
     "@logtail/pino": "^0.5.12",
     "@nestjs/common": "^11.2.7",
     "@nestjs/config": "^4.0.4",

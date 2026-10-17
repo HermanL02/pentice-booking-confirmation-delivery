@@ -37,3 +37,39 @@ jobs:
         with:
           name: coverage
           path: coverage/
+
+  pubsub-integration:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PUBSUB_EMULATOR_HOST: localhost:8085
+      GCP_PROJECT_ID: booking-local
+      OPS_API_KEY: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start Pub/Sub emulator
+        run: >-
+          docker run -d --name pubsub-emulator -p 8085:8085
+          gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+          gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=booking-local
+      - name: Wait for the emulator
+        run: |
+          for _ in $(seq 1 60); do
+            curl -s localhost:8085 >/dev/null && exit 0
+            sleep 2
+          done
+          docker logs pubsub-emulator
+          exit 1
+      - run: pnpm emulator:setup
+      - run: pnpm test:e2e -- pubsub.integration
+      - name: Stop Pub/Sub emulator
+        if: always()
+        run: docker rm -f pubsub-emulator
