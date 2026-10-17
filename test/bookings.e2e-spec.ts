@@ -1,6 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import request from 'supertest';
-import type { StoreState } from '@/storage/storage.port';
+import {
+  STORAGE,
+  type StoragePort,
+  type StoreState,
+} from '@/storage/storage.port';
 import { createTestApp, type TestApp } from './helpers/create-test-app';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -125,5 +129,20 @@ describe('bookings (e2e)', () => {
 
     expect([a.status, b.status].sort()).toEqual([200, 202]);
     expect(a.body.deliveryId).toBe(b.body.deliveryId);
+  });
+
+  it('app.get(STORAGE) resolves the running store', async () => {
+    await post({ reservationId: 'R-store', guest: 'ana@example.com' }).expect(
+      202,
+    );
+    const store = t.app.get<StoragePort>(STORAGE);
+    const state = await store.read();
+
+    expect(state.version).toBe(1);
+    const code = state.reservationIndex['R-store'];
+    expect(state.bookings[code]).toMatchObject({
+      reservationId: 'R-store',
+      guest: 'ana@example.com',
+    });
   });
 });

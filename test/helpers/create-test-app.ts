@@ -23,18 +23,6 @@ function getFreePort(): Promise<number> {
   });
 }
 
-/**
- * `ConfigModule.forRoot` validates the environment when `AppModule` is first
- * evaluated, so the app is loaded in a fresh module registry after the env is set.
- */
-async function loadCreateApp(): Promise<typeof import('@/main').createApp> {
-  let createApp!: typeof import('@/main').createApp;
-  await jest.isolateModulesAsync(async () => {
-    ({ createApp } = await import('@/main'));
-  });
-  return createApp;
-}
-
 function restoreEnv(snapshot: NodeJS.ProcessEnv): void {
   for (const key of Object.keys(process.env)) {
     if (!(key in snapshot)) delete process.env[key];
@@ -70,7 +58,11 @@ export async function createTestApp(
 
   let app: INestApplication;
   try {
-    const createApp = await loadCreateApp();
+    // Order matters: ConfigModule.forRoot validates the env once, when AppModule
+    // is first imported, so the env must be set before this import. The
+    // registerAs namespace factories re-read process.env at each app's init, so
+    // later calls with different env values still take effect.
+    const { createApp } = await import('@/main');
     app = await createApp();
     await app.listen(port, '127.0.0.1');
   } catch (err) {
