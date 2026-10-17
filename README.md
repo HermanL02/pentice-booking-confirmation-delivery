@@ -11,6 +11,32 @@ same process stands in for the guest's phone. The full design is in
 and the task plan in
 [`docs/superpowers/plans/`](docs/superpowers/plans/2026-10-17-booking-confirmation-delivery.md).
 
+## Try it live
+
+A production build of `main` runs at <https://pentice.hermanyiqunliang.com>
+(Coolify on a GCP VM, Docker image from this repo's `Dockerfile`, Let's
+Encrypt TLS, `store.json` on a persistent volume). Swagger UI:
+<https://pentice.hermanyiqunliang.com/api/docs>.
+
+The guest device is simulated inside the same deployment, so the whole loop
+can be exercised with curl. The device is shared between everyone who tries
+it, so put it back online when done.
+
+```bash
+U=https://pentice.hermanyiqunliang.com
+curl -s -X PUT $U/guest-device/status -H 'Content-Type: application/json' -d '{"online":false,"dropRate":0}'
+curl -s -X POST $U/bookings -H 'Content-Type: application/json' -d '{"reservationId":"R-1001","guest":"ana@example.com"}'
+# -> 202 {"reservationId":"R-1001","deliveryId":"...","status":"pending"}; retries now run with backoff
+curl -s -X PUT $U/guest-device/status -H 'Content-Type: application/json' -d '{"online":true,"dropRate":0}'
+curl -s $U/guest-device/inbox        # the device received the code exactly once
+curl -s $U/<code>                    # the booking, any letter case
+```
+
+Ops routes (`/deliveries`, `/metrics`) need `x-api-key`. The key for this
+deployment is shared with reviewers separately, not committed here.
+Deploys are manual: a push to `main` does not redeploy, the owner triggers
+it through the Coolify API.
+
 ## Run it
 
 Needs Node 22 and pnpm 11 (`corepack enable`). No Docker, database or cloud
