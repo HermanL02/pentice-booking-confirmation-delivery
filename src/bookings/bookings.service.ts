@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CLOCK, type Clock } from '../common/clock';
+import { newOutboxRecord } from '../delivery/outbox.record';
 import {
   STORAGE,
   type OutboxRecord,
@@ -67,14 +68,19 @@ export class BookingsService {
 
       const code = generateUniqueCode((c) => c in draft.bookings);
       const deliveryId = randomUUID();
+      const now = this.clock.now();
       draft.bookings[code] = {
         reservationId,
         guest,
         confirmationCode: code,
         deliveryId,
-        createdAt: this.clock.now().toISOString(),
+        createdAt: now.toISOString(),
       };
       draft.reservationIndex[reservationId] = code;
+      draft.outbox[deliveryId] = newOutboxRecord(
+        { deliveryId, confirmationCode: code, reservationId, guest },
+        now,
+      );
       return { created: true, reservationId, deliveryId, status: 'pending' };
     });
 
@@ -93,12 +99,20 @@ export class BookingsService {
     if (booking === undefined) {
       throw new NotFoundException('booking not found');
     }
+    const record = state.outbox[booking.deliveryId];
     return {
       reservationId: booking.reservationId,
       guest: booking.guest,
       confirmationCode: booking.confirmationCode,
       createdAt: booking.createdAt,
-      delivery: { status: 'pending', attempts: 0, ackedAt: null },
+      delivery:
+        record === undefined
+          ? { status: 'pending', attempts: 0, ackedAt: null }
+          : {
+              status: record.status,
+              attempts: record.attempts,
+              ackedAt: record.ackedAt,
+            },
     };
   }
 }
