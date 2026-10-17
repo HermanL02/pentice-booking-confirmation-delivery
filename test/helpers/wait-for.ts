@@ -14,15 +14,21 @@ export async function waitFor<T>(
 ): Promise<T> {
   const { timeoutMs = 5000, intervalMs = 25, label = 'condition' } = opts;
   const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
   for (;;) {
     try {
       const value = await fn();
       if (value) return value;
-    } catch {
-      // not ready yet
+    } catch (err) {
+      // not ready yet; kept so a persistent failure is visible on timeout
+      lastError = err;
     }
     if (Date.now() >= deadline) {
-      throw new Error(`waitFor timed out: ${label}`);
+      const detail =
+        lastError === undefined
+          ? ''
+          : ` (last error: ${lastError instanceof Error ? lastError.message : JSON.stringify(lastError)})`;
+      throw new Error(`waitFor timed out: ${label}${detail}`);
     }
     await new Promise<void>((r) => setTimeout(r, intervalMs));
   }
