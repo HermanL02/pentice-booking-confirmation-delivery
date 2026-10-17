@@ -53,6 +53,9 @@ importers:
       class-validator:
         specifier: ^0.15.1
         version: 0.15.1
+      dotenv:
+        specifier: ^17.4.1
+        version: 17.4.1
       helmet:
         specifier: ^8.3.0
         version: 8.3.0
