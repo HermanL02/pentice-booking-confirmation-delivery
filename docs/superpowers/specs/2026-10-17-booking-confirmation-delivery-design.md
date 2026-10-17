@@ -387,6 +387,7 @@ required value or an invalid type.
 | `DELIVERY_ATTENTION_AFTER_ATTEMPTS` | no | `10` | |
 | `SHUTDOWN_DRAIN_MS` | no | `10000` | |
 | `LOG_LEVEL` | no | `info` | |
+| `THROTTLE_LIMIT_PER_MINUTE` | no | `100` | rate limit on `POST /bookings` |
 | `SENTRY_DSN` | no | | off when unset |
 | `BETTERSTACK_SOURCE_TOKEN` | no | | ships pino logs to BetterStack when set |
 | `BETTERSTACK_INGEST_HOST` | no | `https://in.logs.betterstack.com` | BetterStack ingest endpoint |

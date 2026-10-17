@@ -109,6 +109,52 @@ describe('BookingsService', () => {
     });
   });
 
+  it('creates the outbox record in the same mutation', async () => {
+    const mutate = jest.spyOn(storage, 'mutate');
+
+    const result = await service.create({
+      reservationId: 'R123',
+      guest: 'ana@example.com',
+    });
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    const code = storage.state.reservationIndex.R123;
+    expect(storage.state.bookings[code].deliveryId).toBe(result.deliveryId);
+    expect(storage.state.outbox[result.deliveryId]).toEqual({
+      deliveryId: result.deliveryId,
+      confirmationCode: code,
+      reservationId: 'R123',
+      guest: 'ana@example.com',
+      ackToken: expect.stringMatching(/^[0-9a-f]{64}$/),
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: NOW.toISOString(),
+      leaseUntil: null,
+      lastSentAt: null,
+      ackedAt: null,
+      needsAttention: false,
+      createdAt: NOW.toISOString(),
+      history: [],
+    });
+  });
+
+  it('findByCode reports delivery state from the outbox record', async () => {
+    const { deliveryId } = await service.create({
+      reservationId: 'R123',
+      guest: 'ana@example.com',
+    });
+    const code = storage.state.reservationIndex.R123;
+    Object.assign(storage.state.outbox[deliveryId], {
+      status: 'acked',
+      attempts: 2,
+      ackedAt: NOW.toISOString(),
+    });
+
+    await expect(service.findByCode(code)).resolves.toMatchObject({
+      delivery: { status: 'acked', attempts: 2, ackedAt: NOW.toISOString() },
+    });
+  });
+
   it('findByCode throws NotFoundException', async () => {
     await expect(service.findByCode('zzzzz')).rejects.toThrow(
       NotFoundException,

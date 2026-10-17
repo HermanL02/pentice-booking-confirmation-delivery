@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { TerminusModule } from '@nestjs/terminus';
 import { HealthController } from './health.controller';
+import { DispatcherHealthIndicator } from './dispatcher.health';
 import { StorageHealthIndicator } from './storage.health';
 
 describe('HealthController', () => {
@@ -13,6 +14,12 @@ describe('HealthController', () => {
           provide: StorageHealthIndicator,
           useValue: {
             isHealthy: () => Promise.resolve({ storage: { status: 'up' } }),
+          },
+        },
+        {
+          provide: DispatcherHealthIndicator,
+          useValue: {
+            isHealthy: () => ({ dispatcher: { status: 'up' } }),
           },
         },
       ],

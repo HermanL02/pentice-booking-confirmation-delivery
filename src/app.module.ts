@@ -13,6 +13,8 @@ import { appConfig } from './config/app.config';
 import { deliveryConfig } from './config/delivery.config';
 import { envSchema } from './config/env.schema';
 import { pubsubConfig } from './config/pubsub.config';
+import { DeliveryModule } from './delivery/delivery.module';
+import { GuestDeviceModule } from './guest-device/guest-device.module';
 import { HealthModule } from './health/health.module';
 import { StorageModule } from './storage/storage.module';
 
@@ -45,6 +47,8 @@ import { StorageModule } from './storage/storage.module';
     CommonModule,
     HealthModule,
     StorageModule,
+    DeliveryModule,
+    GuestDeviceModule,
     BookingsModule,
   ],
   controllers: [AppController],

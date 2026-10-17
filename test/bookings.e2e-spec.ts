@@ -59,8 +59,13 @@ describe('bookings (e2e)', () => {
       guest: 'ana@example.com',
       confirmationCode: code,
       createdAt: expect.any(String),
-      delivery: { status: 'pending', attempts: 0, ackedAt: null },
+      delivery: {
+        status: 'pending',
+        attempts: expect.any(Number),
+        ackedAt: null,
+      },
     });
+    expect(res.body.delivery.attempts).toBeGreaterThanOrEqual(0);
   });
 
   it('GET /:code returns 404 for unknown', async () => {
