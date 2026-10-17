@@ -1,17 +1,25 @@
 import request from 'supertest';
 import { createTestApp, type TestApp } from './helpers/create-test-app';
-import { getDelivery, listDeliveries, OPS_API_KEY } from './helpers/ops';
+import {
+  getDelivery,
+  listDeliveries,
+  OPS_API_KEY,
+  type DeliveryView,
+} from './helpers/ops';
 import { waitFor } from './helpers/wait-for';
+
+/** How far ahead the natural retry must be when retry-now is called. */
+const MIN_LEAD_MS = 2500;
 
 describe('ops (e2e)', () => {
   let t: TestApp;
 
   beforeAll(async () => {
-    // Large backoff: once a send fails, the natural retry is seconds away, so
-    // a quick second attempt can only come from retry-now.
+    // Large backoff: with full jitter the natural retry lands uniformly in
+    // [0, 20 s), so it is rarely within the retry-now test's minimum lead.
     t = await createTestApp({
-      DELIVERY_BACKOFF_BASE_MS: '5000',
-      DELIVERY_BACKOFF_MAX_MS: '5000',
+      DELIVERY_BACKOFF_BASE_MS: '20000',
+      DELIVERY_BACKOFF_MAX_MS: '20000',
     });
     await request(t.baseUrl)
       .put('/guest-device/status')
@@ -70,28 +78,50 @@ describe('ops (e2e)', () => {
 
   it('retry-now makes the next tick send immediately', async () => {
     const deliveryId = await book('R-ops-retry');
-    await waitFor(
-      async () => (await getDelivery(t.baseUrl, deliveryId)).attempts >= 1,
-      { label: 'attempts >= 1' },
-    );
-    const { attempts } = await getDelivery(t.baseUrl, deliveryId);
+    const read = () => getDelivery(t.baseUrl, deliveryId);
+    await waitFor(async () => (await read()).attempts >= 1, {
+      label: 'attempts >= 1',
+    });
+
+    // Make the natural retry provably distinct from retry-now: while the
+    // scheduled attempt is too close, let it happen and look again.
+    let before = await read();
+    while (Date.parse(before.nextAttemptAt) - Date.now() < MIN_LEAD_MS) {
+      const seen = before.attempts;
+      await waitFor(async () => (await read()).attempts > seen, {
+        timeoutMs: MIN_LEAD_MS + 1000,
+        label: 'next natural attempt',
+      });
+      before = await read();
+    }
+    const scheduledAt = Date.parse(before.nextAttemptAt);
 
     await request(t.baseUrl)
       .post(`/deliveries/${deliveryId}/retry-now`)
       .set('x-api-key', OPS_API_KEY)
       .expect(200, { scheduled: true });
 
+    // A natural retry cannot run before nextAttemptAt, so an attempt recorded
+    // earlier than the captured schedule can only have come from retry-now.
+    let after: DeliveryView | undefined;
     await waitFor(
-      async () =>
-        (await getDelivery(t.baseUrl, deliveryId)).attempts >= attempts + 1,
-      { timeoutMs: 1500, label: 'attempt after retry-now' },
+      async () => {
+        const r = await read();
+        const early = r.history.some(
+          (h) => h.attempt > before.attempts && Date.parse(h.at) < scheduledAt,
+        );
+        if (early) after = r;
+        return early;
+      },
+      { timeoutMs: 1500, label: 'attempt before the scheduled time' },
     );
+    expect(after?.attempts).toBeGreaterThan(before.attempts);
 
     await request(t.baseUrl)
       .post('/deliveries/00000000-0000-4000-8000-000000000000/retry-now')
       .set('x-api-key', OPS_API_KEY)
       .expect(404);
-  });
+  }, 10_000);
 
   it('GET /metrics requires the key and returns a snapshot', async () => {
     await request(t.baseUrl).get('/metrics').expect(401);
