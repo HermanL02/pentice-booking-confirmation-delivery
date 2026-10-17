@@ -356,9 +356,8 @@ Assumptions, each a call the brief left open:
   would put them behind the booking flow's own authentication.
 - One instance. The lease model already allows more (see Production path).
 - Ids are keys of plain-object maps in the store. Every keyed read checks own
-  properties, so a `reservationId`, `deliveryId` or code such as
-  `constructor` or `toString` is simply unknown (404), never an inherited
-  member. Writes are guarded at the edge: `POST /bookings` rejects a
+  properties, so a `deliveryId` or code such as `constructor` or `toString`
+  is simply unknown (404), never an inherited member. Writes are guarded at the edge: `POST /bookings` rejects a
   `reservationId` of `__proto__`, `constructor` or `prototype` with `400`,
   because `__proto__` cannot be stored as an own key. `deliveryId`s are
   server-generated UUIDs and are only ever read from the path, so a
