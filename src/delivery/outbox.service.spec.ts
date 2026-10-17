@@ -319,4 +319,31 @@ describe('OutboxService', () => {
     expect(storage.state.outbox.acked.leaseUntil).toBe(at(LEASE_MS));
     expect(storage.state.outbox.free.nextAttemptAt).toBe(at(5_000));
   });
+
+  describe.each([['__proto__'], ['constructor'], ['toString']])(
+    'a prototype-named deliveryId %s is unknown',
+    (id) => {
+      beforeEach(() => seed('d1'));
+
+      it('get returns null', async () => {
+        await expect(service.get(id)).resolves.toBeNull();
+      });
+
+      it('ack returns not-found', async () => {
+        await expect(service.ack(id, TOKEN, NOW)).resolves.toBe('not-found');
+      });
+
+      it('retryNow, claimOne and recordOutcome do nothing', async () => {
+        const before = structuredClone(storage.state);
+
+        await expect(service.retryNow(id, NOW)).resolves.toBe(false);
+        await expect(service.claimOne(id, NOW, LEASE_MS)).resolves.toBeNull();
+        await expect(
+          service.recordOutcome(id, 'sent', NOW),
+        ).resolves.toBeNull();
+        await expect(service.releaseLease([id], NOW)).resolves.toBe(0);
+        expect(storage.state).toEqual(before);
+      });
+    },
+  );
 });

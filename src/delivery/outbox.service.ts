@@ -4,6 +4,7 @@ import type { ConfigType } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { deliveryConfig } from '../config/delivery.config';
 import {
+  own,
   STORAGE,
   type OutboxOutcome,
   type OutboxRecord,
@@ -78,7 +79,7 @@ export class OutboxService {
   ): Promise<OutboxRecord | null> {
     const nowMs = now.getTime();
     return this.storage.mutate((draft) => {
-      const record = draft.outbox[deliveryId];
+      const record = own(draft.outbox, deliveryId);
       if (record === undefined || !this.isClaimable(record, nowMs)) {
         return null;
       }
@@ -94,7 +95,7 @@ export class OutboxService {
     error?: string,
   ): Promise<OutboxRecord | null> {
     const result = await this.storage.mutate((draft) => {
-      const record = draft.outbox[deliveryId];
+      const record = own(draft.outbox, deliveryId);
       if (record === undefined || record.status === 'acked') {
         return null;
       }
@@ -114,7 +115,7 @@ export class OutboxService {
     return this.storage.mutate((draft) => {
       let released = 0;
       for (const id of deliveryIds) {
-        const record = draft.outbox[id];
+        const record = own(draft.outbox, id);
         if (record?.status !== 'pending' || record.leaseUntil === null) {
           continue;
         }
@@ -128,7 +129,7 @@ export class OutboxService {
 
   ack(deliveryId: string, ackToken: string, now: Date): Promise<AckResult> {
     return this.storage.mutate((draft): AckResult => {
-      const record = draft.outbox[deliveryId];
+      const record = own(draft.outbox, deliveryId);
       if (record === undefined) return 'not-found';
       if (!tokensMatch(record.ackToken, ackToken)) return 'invalid-token';
       if (record.status === 'acked') return 'already-acked';
@@ -141,7 +142,7 @@ export class OutboxService {
 
   retryNow(deliveryId: string, now: Date): Promise<boolean> {
     return this.storage.mutate((draft) => {
-      const record = draft.outbox[deliveryId];
+      const record = own(draft.outbox, deliveryId);
       if (record === undefined || record.status !== 'pending') return false;
       record.nextAttemptAt = now.toISOString();
       record.leaseUntil = null;
@@ -163,7 +164,7 @@ export class OutboxService {
 
   async get(deliveryId: string): Promise<OutboxRecord | null> {
     const state = await this.storage.read();
-    return state.outbox[deliveryId] ?? null;
+    return own(state.outbox, deliveryId) ?? null;
   }
 
   private isClaimable(record: OutboxRecord, nowMs: number): boolean {
