@@ -12,6 +12,7 @@ import { appConfig } from './config/app.config';
 import { deliveryConfig } from './config/delivery.config';
 import { envSchema } from './config/env.schema';
 import { pubsubConfig } from './config/pubsub.config';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { pubsubConfig } from './config/pubsub.config';
     EventEmitterModule.forRoot(),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 20 }]),
     CommonModule,
+    HealthModule,
   ],
   controllers: [AppController],
 })
