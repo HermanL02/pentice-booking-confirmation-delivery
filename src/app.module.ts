@@ -13,6 +13,7 @@ import { deliveryConfig } from './config/delivery.config';
 import { envSchema } from './config/env.schema';
 import { pubsubConfig } from './config/pubsub.config';
 import { HealthModule } from './health/health.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { HealthModule } from './health/health.module';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 20 }]),
     CommonModule,
     HealthModule,
+    StorageModule,
   ],
   controllers: [AppController],
 })
