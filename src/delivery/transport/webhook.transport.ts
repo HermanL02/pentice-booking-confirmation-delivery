@@ -22,12 +22,15 @@ export class WebhookTransport implements DeliveryTransport {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      const e = err as Error;
-      if (e.name === 'TimeoutError' || e.name === 'AbortError') {
-        throw new TransportError(e.message, 'timeout');
-      }
-      throw new TransportError(e.message, 'failed');
+      const message = err instanceof Error ? err.message : String(err);
+      const timedOut =
+        err instanceof Error &&
+        (err.name === 'TimeoutError' || err.name === 'AbortError');
+      throw new TransportError(message, timedOut ? 'timeout' : 'failed', {
+        cause: err,
+      });
     }
+    await res.body?.cancel().catch(() => undefined);
     if (!res.ok) {
       throw new TransportError(
         `guest device responded ${res.status}`,

@@ -21,8 +21,9 @@ export class TransportError extends Error {
   constructor(
     message: string,
     readonly kind: 'failed' | 'timeout',
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = 'TransportError';
   }
 }

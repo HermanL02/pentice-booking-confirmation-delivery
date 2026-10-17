@@ -35,13 +35,16 @@ describe('WebhookTransport', () => {
     expect((err as TransportError).kind).toBe('failed');
   });
 
-  it('rejects TransportError timeout when fetch aborts', async () => {
-    const fetchFn = jest.fn().mockRejectedValue(named('TimeoutError'));
-    const t = new WebhookTransport(URL_, 1000, fetchFn);
-    const err = await t.send(payload).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(TransportError);
-    expect((err as TransportError).kind).toBe('timeout');
-  });
+  it.each(['AbortError', 'TimeoutError'])(
+    'rejects TransportError timeout when fetch rejects with %s',
+    async (name) => {
+      const fetchFn = jest.fn().mockRejectedValue(named(name));
+      const t = new WebhookTransport(URL_, 1000, fetchFn);
+      const err = await t.send(payload).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(TransportError);
+      expect((err as TransportError).kind).toBe('timeout');
+    },
+  );
 
   it('rejects TransportError failed on connection refused', async () => {
     const fetchFn = jest.fn().mockRejectedValue(new TypeError('fetch failed'));
@@ -61,5 +64,31 @@ describe('WebhookTransport', () => {
     expect(init.method).toBe('POST');
     expect(init.headers).toEqual({ 'content-type': 'application/json' });
     expect(JSON.parse(init.body as string)).toEqual(payload);
+  });
+
+  it('rejects TransportError failed when fetch rejects with a non-Error value', async () => {
+    const fetchFn = jest.fn().mockRejectedValue(null);
+    const t = new WebhookTransport(URL_, 1000, fetchFn);
+    const err = await t.send(payload).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransportError);
+    expect((err as TransportError).kind).toBe('failed');
+  });
+
+  it('preserves the original error as cause', async () => {
+    const cause = new TypeError('fetch failed');
+    const fetchFn = jest.fn().mockRejectedValue(cause);
+    const t = new WebhookTransport(URL_, 1000, fetchFn);
+    const err = await t.send(payload).catch((e: unknown) => e);
+    expect((err as TransportError).cause).toBe(cause);
+  });
+
+  it('drains the response body on non-2xx', async () => {
+    const cancel = jest.fn().mockResolvedValue(undefined);
+    const fetchFn = jest
+      .fn()
+      .mockResolvedValue({ ok: false, status: 503, body: { cancel } });
+    const t = new WebhookTransport(URL_, 1000, fetchFn);
+    await t.send(payload).catch(() => undefined);
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
