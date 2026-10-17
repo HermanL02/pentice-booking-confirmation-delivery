@@ -110,22 +110,19 @@ d('pub/sub transport (integration)', () => {
   it('happy path: delivered through pub/sub, recorded sent, acked once', async () => {
     const deliveryId = await book();
 
+    // The ack can land before the consumer records 'sent'; the outcome is
+    // still counted on the acked record, so wait for both.
     const record = await waitForRecord(
       deliveryId,
-      (r) => r.status === 'acked',
-      `${deliveryId} acked`,
+      (r) => r.status === 'acked' && r.attempts >= 1,
+      `${deliveryId} acked and sent recorded`,
     );
 
     const items = await inbox();
     expect(items).toHaveLength(1);
     expect(items[0].deliveryId).toBe(deliveryId);
-    // The device acks before its 200 reaches the consumer, so the ack can win
-    // the store mutex and make recordOutcome('sent') a no-op: 0 or 1 attempts.
-    expect(record.attempts).toBeLessThanOrEqual(1);
-    // If history is non-empty, its first entry is 'sent'.
-    expect(record.history.slice(0, 1).map((h) => h.outcome)).toEqual(
-      record.history.length > 0 ? ['sent'] : [],
-    );
+    expect(record.attempts).toBe(1);
+    expect(record.history.map((h) => h.outcome)).toEqual(['sent']);
   });
 
   it('offline then online: the outbox retries, the broker never redelivers', async () => {
@@ -163,9 +160,8 @@ d('pub/sub transport (integration)', () => {
     expect(new Set(seen).size).toBe(seen.length);
     expect(seen).toHaveLength(publishedFor(deliveryId).length);
     const final = await getDelivery(t.baseUrl, deliveryId);
-    // Each handled message records at most one outcome (the last can lose
-    // the race to the ack), and each outcome came from a handled message.
-    expect(final.history.length).toBeLessThanOrEqual(seen.length);
-    expect(final.history.length).toBeGreaterThanOrEqual(seen.length - 1);
+    // Each handled message records exactly one outcome, including one that
+    // lands after the ack.
+    expect(final.history).toHaveLength(seen.length);
   });
 });

@@ -128,6 +128,12 @@ A background dispatcher drains the outbox:
    same backoff as a failed send.
 5. Acknowledgement arrives on `POST /deliveries/:deliveryId/ack` with the
    `ackToken` that was in the payload. Record becomes `acked`.
+6. An outcome can land after the ack (the device acks before its `200`
+   reaches the dispatcher, or a retry was in flight). It is still counted:
+   `attempts += 1`, the entry is appended to `history`, and `lastSentAt` is
+   set for `sent`. It never changes `status`, `leaseUntil`, `nextAttemptAt`
+   or `needsAttention`. Ack never reopens a delivery; outcomes are still
+   counted.
 
 Retries never stop. Backoff is exponential with full jitter, capped at
 `DELIVERY_BACKOFF_MAX_MS` (default 5 minutes). Records that pass the
@@ -143,13 +149,15 @@ The transport is at-least-once. Exactly-once is achieved by:
   repeats, but still acknowledges them (ack is idempotent).
 - Once `acked`, the dispatcher never selects the record again.
 - Race: an ack can arrive while a retry is in flight. The retry lands at the
-  guest, which discards it by `deliveryId`. The late ack is a no-op.
+  guest, which discards it by `deliveryId`. Its outcome is recorded on the
+  acked record as an attempt (step 6 of 4.2) and the record stays `acked`.
 
 ### 4.4 Idempotency on the write side
 
 - `POST /bookings` is idempotent on `reservationId`. The first call returns
   `202`. A repeat with the same `guest` returns the same `deliveryId` with
-  `200`. A repeat with a different `guest` is rejected with `409`, because a
+  `200` and the delivery's current `status` (`pending` or `acked`). A repeat
+  with a different `guest` is rejected with `409`, because a
   silent contact change would send the confirmation to the wrong person.
   (Builder's call, settled by Claude.)
 - `POST /deliveries/:deliveryId/ack` is idempotent. Unknown `deliveryId`
@@ -248,12 +256,15 @@ never runs, the tick picks the record up.
   is left to the builder as optional.
 - `GET /deliveries?status=`, `GET /deliveries/:deliveryId`: inspection with the
   attempt history.
-- `POST /deliveries/:deliveryId/retry-now`: clears `nextAttemptAt` so the next
-  tick sends.
+- `POST /deliveries/:deliveryId/retry-now`: sets `nextAttemptAt = now` so the
+  next tick sends. If a send is in flight (live lease) the lease is kept, so no
+  second send starts concurrently; that attempt's outcome then schedules the
+  next one. An absent or expired lease is cleared.
 - Ops endpoints require `x-api-key: OPS_API_KEY`. Guard, not middleware, so the
   Swagger document shows it.
 - Logging: `nestjs-pino`, one child logger per request with `correlationId`
-  (from `x-correlation-id` or generated). Every dispatcher attempt logs
+  (from `x-correlation-id` or generated, in pino-http's `genReqId`, which runs
+  before any Nest middleware). Every dispatcher attempt logs
   `deliveryId`, `attempt`, outcome, and next attempt time.
 - Alerting: at `DELIVERY_ATTENTION_AFTER_ATTEMPTS` (default 10) the record is
   flagged `needsAttention`, logged at error level, and reported to Sentry when

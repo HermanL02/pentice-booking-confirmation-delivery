@@ -24,6 +24,8 @@ export class FileStore implements StoragePort, OnModuleInit {
   private readonly fs: NonNullable<FileStoreOptions['fs']>;
   private readonly mutex = new Mutex();
   private state: StoreState = emptyState();
+  /** The exact string last written, or matching the file loaded at boot. */
+  private lastSerialized: string | null = null;
 
   constructor(opts: FileStoreOptions) {
     this.filePath = opts.filePath;
@@ -42,6 +44,7 @@ export class FileStore implements StoragePort, OnModuleInit {
       return;
     }
     this.state = this.parse(raw);
+    this.lastSerialized = serialize(this.state);
   }
 
   async read(): Promise<StoreState> {
@@ -78,9 +81,12 @@ export class FileStore implements StoragePort, OnModuleInit {
   /**
    * Atomically writes `state` and returns a fresh copy parsed from the exact
    * bytes written, so the cache matches the file and never aliases `state`.
+   * A state identical to the last one written is not rewritten (an idle
+   * dispatcher tick is a mutation that changes nothing) and the cache stays.
    */
   private async persist(state: StoreState): Promise<StoreState> {
-    const serialized = JSON.stringify(state, null, 2);
+    const serialized = serialize(state);
+    if (serialized === this.lastSerialized) return this.state;
     const tmp = `${this.filePath}.tmp`;
     await this.fs.writeFile(tmp, serialized, 'utf8');
     const handle = await this.fs.open(tmp, 'r+');
@@ -90,6 +96,7 @@ export class FileStore implements StoragePort, OnModuleInit {
       await handle.close();
     }
     await this.fs.rename(tmp, this.filePath);
+    this.lastSerialized = serialized;
     return JSON.parse(serialized) as StoreState;
   }
 
@@ -97,6 +104,8 @@ export class FileStore implements StoragePort, OnModuleInit {
     if (this.latencyMs > 0) await sleep(this.latencyMs);
   }
 }
+
+const serialize = (state: StoreState): string => JSON.stringify(state, null, 2);
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);

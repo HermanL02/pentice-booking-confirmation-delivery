@@ -1,4 +1,5 @@
-import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import type { IncomingMessage } from 'node:http';
+import { Module } from '@nestjs/common';
 import { ConfigModule, type ConfigType } from '@nestjs/config';
 import { APP_FILTER } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
@@ -9,7 +10,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { AppController } from './app.controller';
 import { BookingsModule } from './bookings/bookings.module';
 import { CommonModule } from './common/common.module';
-import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
+import { correlationIdFor } from './common/correlation-id';
 import { buildPinoTransport } from './common/logger.transport';
 import { appConfig } from './config/app.config';
 import { deliveryConfig } from './config/delivery.config';
@@ -36,7 +37,8 @@ const sentryEnabled = Boolean(process.env.SENTRY_DSN);
       inject: [appConfig.KEY],
       useFactory: (cfg: ConfigType<typeof appConfig>) => ({
         pinoHttp: {
-          genReqId: (req: { id?: unknown }) => req.id as string,
+          genReqId: correlationIdFor,
+          customProps: (req: IncomingMessage) => ({ correlationId: req.id }),
           level: cfg.logLevel,
           transport: buildPinoTransport(cfg),
         },
@@ -62,8 +64,4 @@ const sentryEnabled = Boolean(process.env.SENTRY_DSN);
     ? [{ provide: APP_FILTER, useClass: SentryGlobalFilter }]
     : [],
 })
-export class AppModule implements NestModule {
-  configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(CorrelationIdMiddleware).forRoutes('{*path}');
-  }
-}
+export class AppModule {}

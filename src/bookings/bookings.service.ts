@@ -4,16 +4,18 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CLOCK, type Clock } from '../common/clock';
 import { newOutboxRecord } from '../delivery/outbox.record';
 import {
+  own,
   STORAGE,
   type OutboxRecord,
   type StoragePort,
 } from '../storage/storage.port';
-import { generateUniqueCode } from './code-generator';
+import { CodeCollisionError, generateUniqueCode } from './code-generator';
 import type { CreateBookingDto } from './dto/create-booking.dto';
 import {
   BOOKING_CREATED,
@@ -24,7 +26,7 @@ export interface CreateBookingResult {
   created: boolean;
   reservationId: string;
   deliveryId: string;
-  status: 'pending';
+  status: OutboxRecord['status'];
 }
 
 export interface BookingView {
@@ -50,9 +52,12 @@ export class BookingsService {
   async create(dto: CreateBookingDto): Promise<CreateBookingResult> {
     const { reservationId, guest } = dto;
     const result = await this.storage.mutate((draft): CreateBookingResult => {
-      const existingCode = draft.reservationIndex[reservationId];
-      if (existingCode !== undefined) {
-        const existing = draft.bookings[existingCode];
+      const existingCode = own(draft.reservationIndex, reservationId);
+      const existing =
+        existingCode === undefined
+          ? undefined
+          : own(draft.bookings, existingCode);
+      if (existing !== undefined) {
         if (existing.guest !== guest) {
           throw new ConflictException(
             'reservationId already booked with a different guest',
@@ -62,11 +67,11 @@ export class BookingsService {
           created: false,
           reservationId,
           deliveryId: existing.deliveryId,
-          status: 'pending',
+          status: own(draft.outbox, existing.deliveryId)?.status ?? 'pending',
         };
       }
 
-      const code = generateUniqueCode((c) => c in draft.bookings);
+      const code = allocateCode((c) => Object.hasOwn(draft.bookings, c));
       const deliveryId = randomUUID();
       const now = this.clock.now();
       draft.bookings[code] = {
@@ -95,11 +100,11 @@ export class BookingsService {
 
   async findByCode(code: string): Promise<BookingView> {
     const state = await this.storage.read();
-    const booking = state.bookings[code.toLowerCase()];
+    const booking = own(state.bookings, code.toLowerCase());
     if (booking === undefined) {
       throw new NotFoundException('booking not found');
     }
-    const record = state.outbox[booking.deliveryId];
+    const record = own(state.outbox, booking.deliveryId);
     return {
       reservationId: booking.reservationId,
       guest: booking.guest,
@@ -114,5 +119,19 @@ export class BookingsService {
               ackedAt: record.ackedAt,
             },
     };
+  }
+}
+
+/** Spec 4.5: five collisions in a row is a capacity problem, reported as 503. */
+function allocateCode(taken: (code: string) => boolean): string {
+  try {
+    return generateUniqueCode(taken);
+  } catch (err) {
+    if (err instanceof CodeCollisionError) {
+      throw new ServiceUnavailableException(
+        'could not allocate a unique confirmation code',
+      );
+    }
+    throw err;
   }
 }

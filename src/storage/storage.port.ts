@@ -54,3 +54,10 @@ export interface StoragePort {
 }
 
 export const STORAGE = Symbol('STORAGE');
+
+/**
+ * Own-property read for the keyed maps in `StoreState`. A plain index would
+ * return inherited members for ids like `constructor` or `__proto__`.
+ */
+export const own = <T>(rec: Record<string, T>, key: string): T | undefined =>
+  Object.hasOwn(rec, key) ? rec[key] : undefined;

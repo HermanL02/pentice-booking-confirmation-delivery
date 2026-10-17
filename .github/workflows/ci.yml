@@ -26,6 +26,7 @@ jobs:
       - run: pnpm lint:check
       - run: pnpm type-check
       - run: pnpm build
+      - run: docker build -t booking-confirmation-delivery:ci .
       - run: pnpm test:cov
         env:
           OPS_API_KEY: ci

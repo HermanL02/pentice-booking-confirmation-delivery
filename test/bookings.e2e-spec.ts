@@ -6,6 +6,7 @@ import {
   type StoreState,
 } from '@/storage/storage.port';
 import { createTestApp, type TestApp } from './helpers/create-test-app';
+import { OPS_API_KEY } from './helpers/ops';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -103,7 +104,12 @@ describe('bookings (e2e)', () => {
     const first = await post(dto).expect(202);
     const second = await post(dto).expect(200);
 
-    expect(second.body).toEqual(first.body);
+    // The repeat reports the delivery's current status, which may already be
+    // acked: the device in this app is online.
+    expect(second.body).toEqual({
+      ...first.body,
+      status: expect.stringMatching(/^(pending|acked)$/),
+    });
   });
 
   it('repeat POST different guest returns 409', async () => {
@@ -150,4 +156,34 @@ describe('bookings (e2e)', () => {
       guest: 'ana@example.com',
     });
   });
+
+  it.each([['constructor'], ['__proto__'], ['prototype']])(
+    'POST with reservationId %s returns 400',
+    async (reservationId) => {
+      const res = await post({ reservationId, guest: 'ana@example.com' });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body.message)).toContain(
+        'reserved property name',
+      );
+    },
+  );
+
+  it.each([['__proto__'], ['constructor'], ['toString']])(
+    'prototype-named deliveryId %s is 404 on the ops and ack routes',
+    async (deliveryId) => {
+      await request(t.baseUrl)
+        .get(`/deliveries/${deliveryId}`)
+        .set('x-api-key', OPS_API_KEY)
+        .expect(404);
+      await request(t.baseUrl)
+        .post(`/deliveries/${deliveryId}/retry-now`)
+        .set('x-api-key', OPS_API_KEY)
+        .expect(404);
+      await request(t.baseUrl)
+        .post(`/deliveries/${deliveryId}/ack`)
+        .send({ ackToken: 'a'.repeat(64) })
+        .expect(404);
+    },
+  );
 });

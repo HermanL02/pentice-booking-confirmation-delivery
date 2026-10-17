@@ -23,11 +23,24 @@ function getFreePort(): Promise<number> {
   });
 }
 
-function restoreEnv(snapshot: NodeJS.ProcessEnv): void {
-  for (const key of Object.keys(process.env)) {
-    if (!(key in snapshot)) delete process.env[key];
+/**
+ * Sets `overrides` on process.env and returns a function that undoes exactly
+ * those keys: prior values come back, keys that were absent are deleted.
+ * Nothing else is touched, so the defaults ConfigModule.forRoot writes into
+ * process.env on the first import survive for later apps in the same file.
+ */
+function applyEnv(overrides: Record<string, string>): () => void {
+  const prior = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    prior.set(key, process.env[key]);
+    process.env[key] = value;
   }
-  Object.assign(process.env, snapshot);
+  return () => {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
 }
 
 export async function createTestApp(
@@ -41,8 +54,7 @@ export async function createTestApp(
   const dataFile = env.DATA_FILE ?? join(dataDir, 'store.json');
   const baseUrl = `http://127.0.0.1:${port}`;
 
-  const snapshot = { ...process.env };
-  Object.assign(process.env, {
+  const restoreEnv = applyEnv({
     NODE_ENV: 'test',
     OPS_API_KEY: 'test',
     DATA_FILE: dataFile,
@@ -69,7 +81,7 @@ export async function createTestApp(
     app = await createApp();
     await app.listen(port, '127.0.0.1');
   } catch (err) {
-    restoreEnv(snapshot);
+    restoreEnv();
     await rm(dataDir, { recursive: true, force: true });
     throw err;
   }
@@ -82,7 +94,7 @@ export async function createTestApp(
       try {
         await app.close();
       } finally {
-        restoreEnv(snapshot);
+        restoreEnv();
         await rm(dataDir, { recursive: true, force: true });
       }
     },

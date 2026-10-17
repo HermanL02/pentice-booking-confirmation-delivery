@@ -1,4 +1,8 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import type { Clock } from '../common/clock';
 import {
@@ -7,6 +11,7 @@ import {
   type StoreState,
 } from '../storage/storage.port';
 import { BookingsService } from './bookings.service';
+import * as codeGenerator from './code-generator';
 import { CODE_PATTERN } from './code-generator';
 import { BookingCreatedEvent } from './events/booking-created.event';
 
@@ -85,6 +90,19 @@ describe('BookingsService', () => {
     expect(emit).toHaveBeenCalledTimes(1);
   });
 
+  it("a repeat reports the delivery's actual status once it is acked", async () => {
+    const dto = { reservationId: 'R123', guest: 'ana@example.com' };
+    const first = await service.create(dto);
+    storage.state.outbox[first.deliveryId].status = 'acked';
+
+    await expect(service.create(dto)).resolves.toEqual({
+      created: false,
+      reservationId: 'R123',
+      deliveryId: first.deliveryId,
+      status: 'acked',
+    });
+  });
+
   it('throws ConflictException for a repeat with a different guest', async () => {
     await service.create({ reservationId: 'R123', guest: 'ana@example.com' });
     const before = structuredClone(storage.state);
@@ -159,5 +177,56 @@ describe('BookingsService', () => {
     await expect(service.findByCode('zzzzz')).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it.each([['constructor'], ['toString'], ['hasOwnProperty']])(
+    'a prototype-named reservationId %s is new on first POST and a repeat on the second',
+    async (reservationId) => {
+      const dto = { reservationId, guest: 'ana@example.com' };
+
+      const first = await service.create(dto);
+      const second = await service.create(dto);
+
+      expect(first.created).toBe(true);
+      expect(second).toMatchObject({
+        created: false,
+        deliveryId: first.deliveryId,
+      });
+    },
+  );
+
+  it('a __proto__ reservationId does not throw (the DTO rejects it before this)', async () => {
+    await expect(
+      service.create({ reservationId: '__proto__', guest: 'ana@example.com' }),
+    ).resolves.toMatchObject({ created: true });
+  });
+
+  it('findByCode treats a prototype-named code as not found', async () => {
+    await expect(service.findByCode('constructor')).rejects.toThrow(
+      NotFoundException,
+    );
+    await expect(service.findByCode('__proto__')).rejects.toThrow(
+      NotFoundException,
+    );
+  });
+
+  it('maps exhausted code collisions to 503 and writes nothing', async () => {
+    const actual = codeGenerator.generateUniqueCode;
+    const spy = jest
+      .spyOn(codeGenerator, 'generateUniqueCode')
+      .mockImplementation((_taken, maxTries) => actual(() => true, maxTries));
+    try {
+      await expect(
+        service.create({ reservationId: 'R123', guest: 'ana@example.com' }),
+      ).rejects.toThrow(
+        new ServiceUnavailableException(
+          'could not allocate a unique confirmation code',
+        ),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(storage.state).toEqual(emptyState());
+    expect(emit).not.toHaveBeenCalled();
   });
 });
