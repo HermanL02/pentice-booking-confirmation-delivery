@@ -70,7 +70,8 @@ outbox, across container restarts.
    outbox record (`pending`, `attempts: 0`, a fresh `deliveryId` and a
    32-byte `ackToken`). The file is replaced atomically. The response is
    `202 { reservationId, deliveryId, status: "pending" }`. It does not
-   contain the code.
+   contain the code. A repeat with the same guest returns `200` with the same
+   `deliveryId` and the delivery's current `status` (`pending` or `acked`).
 2. After the write, `booking.created` is emitted. The dispatcher claims the
    record right away by setting a lease (`leaseUntil = now + 15 s`). It then
    sends `{ deliveryId, confirmationCode, reservationId, guest, ackToken,
@@ -80,9 +81,12 @@ outbox, across container restarts.
    `ackUrl` (`POST /deliveries/:deliveryId/ack`). The record becomes `acked`
    and is never selected again.
 4. Meanwhile the dispatcher records the send: `attempts += 1`, `sent` in
-   `history`, lease cleared, and `nextAttemptAt` moved by the backoff. A send
-   is not a delivery. If no ack arrives (the device took the message and lost
-   it), the record is sent again when that time comes.
+   `history`, `lastSentAt` set, lease cleared, and `nextAttemptAt` moved by
+   the backoff. The ack and this outcome can land in either order. If the ack
+   won, the send is still counted (`attempts`, `history`, `lastSentAt`), but
+   the record stays `acked` and nothing is rescheduled: ack never reopens a
+   delivery. A send is not a delivery. If no ack arrives (the device took the
+   message and lost it), the record is sent again when that time comes.
 
 **Device offline.** The inbox answers 503. That attempt is recorded as
 `failed`, and the next one is scheduled with exponential backoff and full
@@ -90,7 +94,9 @@ jitter (base 1 s, cap 5 min). A 1 s tick drains whatever is due, so retries
 never stop. After 10 attempts the record is flagged `needsAttention` and an
 error-level alert is raised. It keeps retrying. When the device comes back,
 the next due attempt is acked, and the inbox still holds exactly one entry.
-`retry-now` skips the wait.
+`retry-now` skips the wait. A tick with nothing due changes nothing, and the
+store skips writing a state identical to the last one written, so an idle
+service does not rewrite or `fsync` the file.
 
 **Restart.** All delivery state is in `store.json`, so a new process picks
 up every pending record on its first tick. A record that was mid-send when
@@ -104,12 +110,12 @@ attempt.
 
 | Method | Path | Auth | Responses |
 |---|---|---|---|
-| POST | `/bookings` | none, rate limited per IP | `202` created; `200` repeat with same guest (same `deliveryId`); `400` invalid or unknown fields; `409` same `reservationId`, different guest; `429` throttled |
+| POST | `/bookings` | none, rate limited per IP | `202` created; `200` repeat with same guest (same `deliveryId`, current `status`: `pending` or `acked`); `400` invalid or unknown fields, or a `reservationId` of `__proto__`, `constructor` or `prototype`; `409` same `reservationId`, different guest; `429` throttled; `503` no unique code after 5 tries |
 | GET | `/:code` | none | `200 { reservationId, guest, confirmationCode, createdAt, delivery: { status, attempts, ackedAt } }`; `400` not 5 alphanumerics; `404 { statusCode, message, error }` |
 | POST | `/deliveries/:deliveryId/ack` | `ackToken` in body | `200 { status: "acked" \| "already-acked" }`; `400` malformed token; `401` wrong token; `404` unknown delivery |
 | GET | `/deliveries?status=pending\|acked&attention=true\|false` | `x-api-key` | `200` records oldest first, `ackToken` omitted; `400`; `401` |
 | GET | `/deliveries/:deliveryId` | `x-api-key` | `200` record with `history`; `401`; `404` |
-| POST | `/deliveries/:deliveryId/retry-now` | `x-api-key` | `200 { scheduled: true }`; `401`; `404` unknown or already acked |
+| POST | `/deliveries/:deliveryId/retry-now` | `x-api-key` | `200 { scheduled: true }`, due now; with a send in flight it takes effect after that attempt lands (no second concurrent send); `401`; `404` unknown or already acked |
 | GET | `/metrics` | `x-api-key` | `200` snapshot (see Operations); `401` |
 | GET | `/health` | none | `200 { status: "ok", ... }`; `503` when an indicator is down |
 | GET | `/api/docs` | none | Swagger UI |
@@ -129,7 +135,7 @@ e2e suite checks that `/health` is not swallowed by it.
 |---|---|---|
 | A booking never exists without its delivery, or the reverse | Booking, index and outbox record are written in one `FileStore.mutate`, under one mutex. The file is written to `store.json.tmp`, `fsync`ed and renamed, so the file on disk is always a complete state | `bookings.service.ts`, `file-store.ts` |
 | Retries never stop | No attempt cap. Backoff `random() * min(max, base * 2^(n-1))`. The attention flag only alerts | `outbox.service.ts`, `backoff.policy.ts` |
-| The guest sees each confirmation once | One `deliveryId` per booking, reused on every retry. The device drops repeats and still acks them. Ack is idempotent. An acked record is never claimed again. A late send outcome after an ack is ignored | `guest-device.service.ts`, `outbox.service.ts` |
+| The guest sees each confirmation once | One `deliveryId` per booking, reused on every retry. The device drops repeats and still acks them. Ack is idempotent. An acked record is never claimed again. A send outcome that lands after the ack is counted but never reopens the record | `guest-device.service.ts`, `outbox.service.ts` |
 | Only the guest can ack | 32-byte random `ackToken` per delivery, compared in constant time and hidden from ops responses | `outbox.record.ts`, `ops.controller.ts` |
 | Crash safety | All state is in the file, and a restart resumes from it. Leases from a dead process expire. Tested by booking with the device offline, closing the app, booting a new one on the same file and seeing one delivery | `restart.e2e-spec.ts` |
 | Lease semantics | A record is claimed only when `pending`, due, and unleased. An expired lease counts as an attempt (`lease-expired`), because the send may have landed. A lease released on shutdown does not count, because nothing was sent. A record expired in a pass is not reclaimed in the same pass | `outbox.service.ts`, `dispatcher.service.ts` |
@@ -140,9 +146,9 @@ Known limits, stated plainly:
   unreliable side. Suppose a confirmation reached the device, every ack try
   was lost, and then the process restarted. The device would then record the
   re-send as new. A real device must persist the `deliveryId`s it has seen.
-- After 5 code collisions in a row, `POST /bookings` fails with 500. The spec
-  says 503, but that mapping is not built. At 60 million codes this does not
-  happen in practice.
+- After 5 code collisions in a row, `POST /bookings` fails with 503
+  (`could not allocate a unique confirmation code`) and writes nothing. At
+  60 million codes this does not happen in practice.
 - The data directory is not `fsync`ed after the rename. After a power loss
   the file holds either the previous complete state or the new one, never a
   partial one.
@@ -152,6 +158,10 @@ Known limits, stated plainly:
 - **Inspect and act.** `GET /deliveries` (filter by `status` and
   `attention`), `GET /deliveries/:id` with the last 50 attempts, and
   `POST /deliveries/:id/retry-now`. All of them need `x-api-key: $OPS_API_KEY`.
+  `retry-now` makes the record due now. If a send is in flight (its lease is
+  live), the lease is kept so no second send starts concurrently, and the
+  retry takes effect after that in-flight attempt lands: that attempt is the
+  retry, and its outcome schedules the next one as usual.
   The check is a guard, not middleware, so Swagger shows it.
 - **`/metrics`** (JSON, needs `x-api-key`):
 
@@ -170,13 +180,17 @@ Known limits, stated plainly:
   device was offline, so it errs on the strict side.
 - **Alerts.** At `DELIVERY_ATTENTION_AFTER_ATTEMPTS` (10) the record is
   flagged and an error is logged: `delivery needs attention deliveryId=…
-  attempts=…`. When `SENTRY_DSN` is set, the alert also goes to Sentry, and
-  so do unhandled exceptions. The flag is written before the alert fires.
-- **Logs.** `nestjs-pino` JSON logs on stdout. Each request carries a
-  `correlationId`, taken from `x-correlation-id` or generated, and echoed in
-  the response header. Each send logs `deliveryId`, `attempt`, `outcome`
-  and `nextAttemptAt`. When `BETTERSTACK_SOURCE_TOKEN` is set, a second pino
-  target (`@logtail/pino`) also ships every line to BetterStack Logs.
+  attempts=…`. When `SENTRY_DSN` is set (in the environment or in `.env`,
+  which `instrument.ts` loads before it initialises the SDK), the alert also
+  goes to Sentry, and so do unhandled exceptions. The flag is written before
+  the alert fires.
+- **Logs.** `nestjs-pino` JSON logs on stdout. Each request log line carries
+  the correlation id as `req.id` and `correlationId`. pino-http's `genReqId`
+  sets it (from `x-correlation-id`, else a new UUID) before any Nest
+  middleware runs, and echoes it in the `x-correlation-id` response header.
+  Each send logs `deliveryId`, `attempt`, `outcome` and `nextAttemptAt`.
+  When `BETTERSTACK_SOURCE_TOKEN` is set, a second pino target
+  (`@logtail/pino`) also ships every line to BetterStack Logs.
 - **Health.** `GET /health` checks two things: the store is readable and its
   directory is writable, and the dispatcher ticked within the last 3 tick
   intervals. In production, BetterStack Uptime (or any HTTP monitor) probes it
@@ -227,18 +241,23 @@ pnpm test:cov       # unit with coverage
 
 - **Unit** (Jest, no network). Covers the code generator, the atomic
   `FileStore` (failed rename, serialised mutations, isolated reads), the
-  backoff bounds, outbox transitions, the dispatcher, the webhook transport,
-  the ack and ops controllers, metrics, alerts, the guard, the config schema
-  and the health indicators. The suite stays well under 10 s, so it can be
+  backoff bounds, skipped writes for unchanged state, outbox transitions
+  (including outcomes after ack, `retry-now` with a live lease and
+  prototype-named ids), the 503 on code collisions, the dispatcher, the
+  webhook transport, the correlation id, the ack and ops controllers,
+  metrics, alerts, the guard, the config schema and the health indicators. The suite stays well under 10 s, so it can be
   rerun after every change while live coding.
 - **E2E**, by scenario:
   - bookings: `POST` returns 202 without a code; `GET /:code` resolves
     case-insensitively; unknown code 404; `/health` not swallowed by
     `/:code`; extra field 400; empty guest 400; repeat same guest 200 with the
     same `deliveryId`; repeat different guest 409; 50 parallel POSTs give 50
-    distinct codes; 2 parallel identical POSTs give one 202 and one 200.
-  - delivery: happy path acked once; offline then online, retried with
-    backoff until acked, exactly one inbox entry; drop rate 1 then 0
+    distinct codes; 2 parallel identical POSTs give one 202 and one 200;
+    `reservationId` `constructor`, `__proto__` or `prototype` is 400;
+    `GET /deliveries/__proto__` (and other prototype names) is 404.
+  - delivery: happy path acked once with exactly one `sent` attempt;
+    offline then online, retried with backoff until acked, exactly one inbox
+    entry; drop rate 1 then 0
     (sent but lost is retried); wrong ack token 401; ack twice 200 then
     `already-acked`; unknown delivery 404; a late ack after a retry is in
     flight does not duplicate; connection refused is a failed attempt.
@@ -246,6 +265,10 @@ pnpm test:cov       # unit with coverage
     the same data file and port.
   - ops: no key 401; the list shows the pending record; `retry-now` sends on
     the next tick; `/metrics` needs the key and returns a snapshot.
+  - logging: the request log line carries the `x-correlation-id` sent, or
+    the generated one that is echoed.
+  - harness: two apps booted in one file both see the Joi defaults; invalid
+    env rejects without leaving a temp dir.
 - **Pub/Sub integration** (`test/pubsub.integration-spec.ts`). Runs the happy
   path and offline-then-online through `PubSubTransport`. Without
   `PUBSUB_EMULATOR_HOST` it skips itself, so `pnpm test:e2e` passes on any
@@ -320,6 +343,7 @@ it, are in [`docs/decisions.md`](docs/decisions.md).
 | 11 | A repeat `POST` with the same guest returns 200 with the same delivery; a different guest returns 409 |
 | 12 | An expired lease counts as an attempt; a lease released on shutdown does not |
 | 13 | No OpenTelemetry. Sentry and BetterStack are env-gated and off by default |
+| 14 | A send outcome that lands after the ack is counted; ack never reopens a delivery |
 
 Assumptions, each a call the brief left open:
 
@@ -331,6 +355,14 @@ Assumptions, each a call the brief left open:
 - `POST /bookings` and `GET /:code` are open, as in the brief. Production
   would put them behind the booking flow's own authentication.
 - One instance. The lease model already allows more (see Production path).
+- Ids are keys of plain-object maps in the store. Every keyed read checks own
+  properties, so a `reservationId`, `deliveryId` or code such as
+  `constructor` or `toString` is simply unknown (404), never an inherited
+  member. Writes are guarded at the edge: `POST /bookings` rejects a
+  `reservationId` of `__proto__`, `constructor` or `prototype` with `400`,
+  because `__proto__` cannot be stored as an own key. `deliveryId`s are
+  server-generated UUIDs and are only ever read from the path, so a
+  prototype name there is a `404`, not a `400`.
 
 ## Production path
 
@@ -363,6 +395,30 @@ Assumptions, each a call the brief left open:
 | Guest changes contact mid-delivery | `PATCH /bookings/:reservationId/guest`; outbox record updated under the mutex |
 | Multiple instances | Lease already exists; swap `FileStore` for a shared store |
 
+## What I would do with one more hour
+
+- **Prune acked records.** The outbox keeps every acked record forever, and
+  every write serialises the whole file, so write cost grows with history. A
+  retention window (say 7 days after `ackedAt`) would bound it.
+- **Measure write amplification.** Before the final fix, every idle
+  dispatcher tick rewrote and `fsync`ed the whole store, once per second.
+  Unchanged states are now skipped, but each claim and outcome still rewrites
+  everything. I would count bytes written per minute in `/metrics` and use it
+  to decide when to move to an append log or Postgres.
+- **Close the prototype-key class of bug for good.** The review found that
+  ids like `constructor` crashed `POST /bookings` and the ops routes with a
+  500. Reads are now own-property checked and the DTO rejects unsafe ids, but
+  the root cause is plain objects used as maps. I would load the store into
+  null-prototype objects or `Map`s and add a property-based test over
+  arbitrary id strings.
+- **Prometheus text format.** `/metrics` is a JSON snapshot. Serving the
+  same counters in the Prometheus exposition format would let a standard
+  scraper and alert rules use them directly.
+- **`trust proxy` for the throttler.** Behind a load balancer every client
+  shares the balancer's IP, so the per-IP limit on `POST /bookings` becomes
+  global. Setting Express `trust proxy` to the balancer hop count fixes the
+  key.
+
 ## How AI was used
 
 Claude Code wrote the code, working from a written spec and plan in
@@ -384,10 +440,12 @@ Three things the reviews caught that were changed:
   in progress. Records claimed but not yet sent kept their leases and would
   have been charged an attempt after restart. The drain now tracks whole ticks
   and releases unsent leases without an attempt (`e496337`).
-- **Ack-vs-sent race in the e2e.** On a fast machine the device's ack could
-  land before the dispatcher recorded `sent`. The happy-path test asserted an
-  order the system does not promise, and it was made to tolerate both orders
-  (`8ed20cd`).
+- **Ack-vs-sent race.** On a fast machine the device's ack could land before
+  the dispatcher recorded `sent`, and the late outcome was dropped, so an
+  acked record could show `attempts: 0`. The test was first made to tolerate
+  both orders (`8ed20cd`). The final review settled it in the code instead:
+  an outcome after the ack is counted but never reopens the record
+  (decision 14), and the test asserts exactly one attempt again.
 
 Other review fixes are in the history as `fix(...)` commits, for example
 claimDue no longer reclaims a record it has just expired.
@@ -400,15 +458,15 @@ beyond the box.
 
 | Date | Phase | Start | End | Hours | Notes |
 |---|---|---|---|---|---|
-| 2026-10-17 | Design and planning (spec, plan, JD review, FigJam architecture diagram) | — | 15:24 | _fill in_ | Before the first commit; Herman to record the actual span |
+| 2026-10-17 | Design and planning (spec, plan, JD review, FigJam architecture diagram) | — | 15:24 | not measured by the agent; Herman records the actual span | Before the first commit |
 | 2026-10-17 | Core: PR 1 scaffold, config, bootstrap, health, CI | 15:24 | 15:37 | 0.2 | 4 tasks, 2 review rounds |
 | 2026-10-17 | Core: PR 2 storage, codes, bookings API, e2e harness | 15:37 | 15:59 | 0.4 | 4 tasks, 2 fix rounds |
 | 2026-10-17 | Core: PR 3 outbox, dispatcher, transport, ack, guest device, e2e scenarios | 15:59 | 16:28 | 0.5 | 5 tasks, 5 fix rounds |
-| 2026-10-17 | Extras: PR 4 ops API, metrics, alerts, demo | 16:28 | _open_ | | 4 tasks batched |
-| 2026-10-17 | Extras: PR 5 Pub/Sub transport | _fill in_ | _open_ | | Built in parallel with PR 6 |
-| 2026-10-17 | Extras: PR 6 Dockerfile, README, decisions, diagram | _fill in_ | _open_ | | 2 tasks batched, FigJam diagram by the main agent |
+| 2026-10-17 | Extras: PR 4 ops API, metrics, alerts, demo | 16:28 | 16:46 | 0.3 | 4 tasks batched |
+| 2026-10-17 | Extras: PR 5 Pub/Sub transport | 16:40 | 17:02 | 0.4 | Built in parallel with PR 6 |
+| 2026-10-17 | Extras: PR 6 Dockerfile, README, decisions, diagram, whole-project review and final fix wave | 16:44 | 17:30 | 0.8 | 2 tasks batched, FigJam diagram by the main agent; review findings fixed in one pass |
 
-Core subtotal (build only): 1.1 h, plus design and planning above. Extras subtotal: _running_.
+Core subtotal (build only): 1.1 h, plus design and planning above. Extras subtotal: 1.5 h (sum of the rows; PRs 5 and 6 overlapped, so the wall-clock span 16:28 to 17:30 is 1.0 h).
 
 ## Repository layout
 

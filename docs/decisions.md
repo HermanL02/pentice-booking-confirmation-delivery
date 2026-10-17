@@ -19,6 +19,7 @@ here alongside the builder's calls.
 11. [Repeat `POST /bookings`: same guest 200, different guest 409](#11-repeat-post-bookings-same-guest-200-different-guest-409)
 12. [An expired lease counts as an attempt; a released lease does not](#12-an-expired-lease-counts-as-an-attempt-a-released-lease-does-not)
 13. [OpenTelemetry dropped; Sentry and BetterStack env-gated](#13-opentelemetry-dropped-sentry-and-betterstack-env-gated)
+14. [An outcome after the ack is counted; ack never reopens](#14-an-outcome-after-the-ack-is-counted-ack-never-reopens)
 
 ---
 
@@ -260,8 +261,11 @@ scaffolding with no risk behind it. A single process with one outbox does
 not need distributed tracing.
 
 **Decision.** No OpenTelemetry. Structured logs via `nestjs-pino` with a
-correlation id per request and one line per delivery attempt; a JSON
-`/metrics` snapshot; Sentry for the attention alert when `SENTRY_DSN` is set;
+correlation id per request (set in pino-http's `genReqId`, so it is on the
+request log line) and one line per delivery attempt; a JSON
+`/metrics` snapshot; Sentry for the attention alert when `SENTRY_DSN` is set (in the
+environment or `.env`: `instrument.ts` loads `.env` before it initialises the
+SDK);
 BetterStack log shipping when `BETTERSTACK_SOURCE_TOKEN` is set. Both are off
 by default and the core path never needs them.
 
@@ -271,3 +275,28 @@ line is the join key instead.
 
 **How to reverse.** Add `@opentelemetry/sdk-node` in `instrument.ts` next to
 Sentry and propagate the trace context in the Pub/Sub message attributes.
+
+## 14. An outcome after the ack is counted; ack never reopens
+
+**Context.** The device acks before its `200` reaches the dispatcher (or the
+Pub/Sub consumer), so the ack can win the store mutex and the `sent` outcome
+lands on an already-acked record. The same happens when a retry is in flight
+at ack time. Dropping the late outcome left an acked record that showed
+`attempts: 0` and an empty history although a send had happened.
+
+**Decision.** `recordOutcome` on an `acked` record still appends the history
+entry, increments `attempts` and sets `lastSentAt` for `sent`. It does not
+change `status`, `leaseUntil` (left null), `nextAttemptAt` or
+`needsAttention`, and raises no alert. Ack never reopens a delivery;
+outcomes are still counted.
+
+**Consequences.** `attempts` and `history` describe every send that
+happened, in either order of ack and outcome, so the happy path always shows
+exactly one attempt. An acked record can gain at most one attempt after the
+ack: the lease allows one send at a time, and an acked record is never
+claimed.
+
+**How to reverse.** Return early for `acked` records in
+`OutboxService.recordOutcome`, as before, and accept attempt counts that
+depend on the race.
+
