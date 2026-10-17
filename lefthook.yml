@@ -1,0 +1,13 @@
+pre-commit:
+  commands:
+    lint:
+      glob: '*.ts'
+      run: pnpm lint --fix
+      stage_fixed: true
+    type-check:
+      glob: '*.ts'
+      run: pnpm type-check
+commit-msg:
+  commands:
+    commitlint:
+      run: pnpm exec commitlint --edit "$1"
