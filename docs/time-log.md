@@ -12,6 +12,8 @@ session ledger.
 | 2026-10-17 | Core: PR 2 storage, codes, bookings API, e2e harness | 15:37 | 15:59 | 0.4 | 4 tasks, 2 fix rounds |
 | 2026-10-17 | Core: PR 3 outbox, dispatcher, transport, ack, guest device, e2e scenarios | 15:59 | 16:28 | 0.5 | 5 tasks, 5 fix rounds |
 | 2026-10-17 | Extras: PR 4 ops API, metrics, alerts, demo | 16:28 | _open_ | | 4 tasks batched |
+| 2026-10-17 | Extras: PR 5 Pub/Sub transport | _fill in_ | _open_ | | Built in parallel with PR 6 |
+| 2026-10-17 | Extras: PR 6 Dockerfile, README, decisions, diagram | _fill in_ | _open_ | | 2 tasks batched, FigJam diagram by the main agent |
 
 Core subtotal (build only): 1.1 h, plus design and planning above. Extras subtotal: _running_.
 
