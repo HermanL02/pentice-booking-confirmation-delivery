@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+data/*.json
+data/*.tmp
+.env
+.env.local
+*.log
+.superpowers/
