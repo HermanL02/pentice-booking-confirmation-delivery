@@ -26,7 +26,7 @@ export interface CreateBookingResult {
   created: boolean;
   reservationId: string;
   deliveryId: string;
-  status: 'pending';
+  status: OutboxRecord['status'];
 }
 
 export interface BookingView {
@@ -67,7 +67,7 @@ export class BookingsService {
           created: false,
           reservationId,
           deliveryId: existing.deliveryId,
-          status: 'pending',
+          status: own(draft.outbox, existing.deliveryId)?.status ?? 'pending',
         };
       }
 

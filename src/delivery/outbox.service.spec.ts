@@ -272,24 +272,69 @@ describe('OutboxService', () => {
     await expect(service.ack('nope', TOKEN, NOW)).resolves.toBe('not-found');
   });
 
-  it('recordOutcome after ack is a no-op', async () => {
-    seed('d1');
+  it('recordOutcome after ack counts the attempt but never reopens the record', async () => {
+    seed('d1', { leaseUntil: at(LEASE_MS), nextAttemptAt: at(-1_000) });
+    await service.ack('d1', TOKEN, NOW);
+    const before = structuredClone(storage.state.outbox.d1);
+    const later = new Date(at(1_000));
+
+    const updated = await service.recordOutcome('d1', 'sent', later);
+
+    expect(updated).toEqual(storage.state.outbox.d1);
+    expect(storage.state.outbox.d1).toEqual({
+      ...before,
+      attempts: 1,
+      lastSentAt: later.toISOString(),
+      history: [{ at: later.toISOString(), attempt: 1, outcome: 'sent' }],
+    });
+    expect(storage.state.outbox.d1).toMatchObject({
+      status: 'acked',
+      leaseUntil: null,
+      nextAttemptAt: before.nextAttemptAt,
+      needsAttention: false,
+    });
+  });
+
+  it('a failed outcome after ack is counted without lastSentAt, flag or alert', async () => {
+    seed('d1', { attempts: 2 });
     await service.ack('d1', TOKEN, NOW);
     const before = structuredClone(storage.state.outbox.d1);
 
-    await expect(
-      service.recordOutcome('d1', 'failed', new Date(at(1_000))),
-    ).resolves.toBeNull();
-    expect(storage.state.outbox.d1).toEqual(before);
+    await service.recordOutcome('d1', 'failed', NOW, 'boom');
+
+    expect(storage.state.outbox.d1).toEqual({
+      ...before,
+      attempts: 3,
+      history: [
+        { at: NOW.toISOString(), attempt: 3, outcome: 'failed', error: 'boom' },
+      ],
+    });
+    expect(events.emit).not.toHaveBeenCalled();
   });
 
-  it('retryNow sets nextAttemptAt to now', async () => {
-    seed('d1', { nextAttemptAt: at(600_000), leaseUntil: at(LEASE_MS) });
+  it('retryNow clears an expired lease and makes the record due now', async () => {
+    seed('d1', { nextAttemptAt: at(600_000), leaseUntil: at(-1) });
 
     await expect(service.retryNow('d1', NOW)).resolves.toBe(true);
     expect(storage.state.outbox.d1.nextAttemptAt).toBe(NOW.toISOString());
     expect(storage.state.outbox.d1.leaseUntil).toBeNull();
     await expect(service.retryNow('missing', NOW)).resolves.toBe(false);
+  });
+
+  it('retryNow keeps a live lease, so no concurrent second send is claimed', async () => {
+    seed('d1', { nextAttemptAt: at(600_000), leaseUntil: at(LEASE_MS) });
+
+    await expect(service.retryNow('d1', NOW)).resolves.toBe(true);
+    expect(storage.state.outbox.d1.nextAttemptAt).toBe(NOW.toISOString());
+    expect(storage.state.outbox.d1.leaseUntil).toBe(at(LEASE_MS));
+    await expect(service.claimDue(NOW, LEASE_MS)).resolves.toEqual([]);
+    await expect(service.claimOne('d1', NOW, LEASE_MS)).resolves.toBeNull();
+  });
+
+  it('retryNow on an acked record returns false', async () => {
+    seed('d1', { status: 'acked', ackedAt: NOW.toISOString() });
+
+    await expect(service.retryNow('d1', NOW)).resolves.toBe(false);
   });
 
   it('releaseLease clears the lease without counting an attempt', async () => {

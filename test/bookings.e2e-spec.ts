@@ -104,7 +104,12 @@ describe('bookings (e2e)', () => {
     const first = await post(dto).expect(202);
     const second = await post(dto).expect(200);
 
-    expect(second.body).toEqual(first.body);
+    // The repeat reports the delivery's current status, which may already be
+    // acked: the device in this app is online.
+    expect(second.body).toEqual({
+      ...first.body,
+      status: expect.stringMatching(/^(pending|acked)$/),
+    });
   });
 
   it('repeat POST different guest returns 409', async () => {

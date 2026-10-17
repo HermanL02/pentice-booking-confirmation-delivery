@@ -90,6 +90,19 @@ describe('BookingsService', () => {
     expect(emit).toHaveBeenCalledTimes(1);
   });
 
+  it("a repeat reports the delivery's actual status once it is acked", async () => {
+    const dto = { reservationId: 'R123', guest: 'ana@example.com' };
+    const first = await service.create(dto);
+    storage.state.outbox[first.deliveryId].status = 'acked';
+
+    await expect(service.create(dto)).resolves.toEqual({
+      created: false,
+      reservationId: 'R123',
+      deliveryId: first.deliveryId,
+      status: 'acked',
+    });
+  });
+
   it('throws ConflictException for a repeat with a different guest', async () => {
     await service.create({ reservationId: 'R123', guest: 'ana@example.com' });
     const before = structuredClone(storage.state);

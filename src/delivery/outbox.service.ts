@@ -96,8 +96,11 @@ export class OutboxService {
   ): Promise<OutboxRecord | null> {
     const result = await this.storage.mutate((draft) => {
       const record = own(draft.outbox, deliveryId);
-      if (record === undefined || record.status === 'acked') {
-        return null;
+      if (record === undefined) return null;
+      if (record.status === 'acked') {
+        // Ack never reopens a delivery; outcomes are still counted.
+        countAttempt(record, outcome, now, error);
+        return { record, flagged: false };
       }
       const flagged = this.applyOutcome(record, outcome, now, error);
       return { record, flagged };
@@ -145,7 +148,12 @@ export class OutboxService {
       const record = own(draft.outbox, deliveryId);
       if (record === undefined || record.status !== 'pending') return false;
       record.nextAttemptAt = now.toISOString();
-      record.leaseUntil = null;
+      // A live lease means a send is in flight: keep it, so no second send
+      // starts concurrently. Its outcome schedules the next attempt.
+      const leaseLive =
+        record.leaseUntil !== null &&
+        Date.parse(record.leaseUntil) >= now.getTime();
+      if (!leaseLive) record.leaseUntil = null;
       return true;
     });
   }
@@ -182,22 +190,11 @@ export class OutboxService {
     now: Date,
     error?: string,
   ): boolean {
-    const iso = now.toISOString();
-    record.attempts += 1;
+    countAttempt(record, outcome, now, error);
     record.leaseUntil = null;
     record.nextAttemptAt = new Date(
       now.getTime() + this.backoff.delayMs(record.attempts),
     ).toISOString();
-    record.history.push({
-      at: iso,
-      attempt: record.attempts,
-      outcome,
-      ...(error === undefined ? {} : { error }),
-    });
-    if (record.history.length > HISTORY_CAP) {
-      record.history = record.history.slice(-HISTORY_CAP);
-    }
-    if (outcome === 'sent') record.lastSentAt = iso;
     if (
       !record.needsAttention &&
       record.attempts >= this.cfg.attentionAfterAttempts
@@ -207,6 +204,27 @@ export class OutboxService {
     }
     return false;
   }
+}
+
+/** The bookkeeping every outcome gets, acked or not: count, history, lastSentAt. */
+function countAttempt(
+  record: OutboxRecord,
+  outcome: OutboxOutcome,
+  now: Date,
+  error?: string,
+): void {
+  const iso = now.toISOString();
+  record.attempts += 1;
+  record.history.push({
+    at: iso,
+    attempt: record.attempts,
+    outcome,
+    ...(error === undefined ? {} : { error }),
+  });
+  if (record.history.length > HISTORY_CAP) {
+    record.history = record.history.slice(-HISTORY_CAP);
+  }
+  if (outcome === 'sent') record.lastSentAt = iso;
 }
 
 function attentionEvent(record: OutboxRecord): DeliveryAttentionEvent {

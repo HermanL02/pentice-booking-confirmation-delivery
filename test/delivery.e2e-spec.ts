@@ -79,17 +79,21 @@ describe('delivery (e2e)', () => {
   it('happy path: booking is delivered, acked once, GET /:code shows acked', async () => {
     const { deliveryId } = await book();
 
-    await waitForAcked(deliveryId);
+    // The ack can land before the dispatcher records 'sent'; the outcome is
+    // still counted on the acked record, so wait for both.
+    const record = await waitForRecord(
+      t.baseUrl,
+      deliveryId,
+      (r) => r.status === 'acked' && r.attempts >= 1,
+      `${deliveryId} acked and sent recorded`,
+    );
 
     const items = await inbox();
     expect(items).toHaveLength(1);
     expect(items[0].deliveryId).toBe(deliveryId);
-    const record = await outbox(deliveryId);
-    expect(record.status).toBe('acked');
-    // The device acks before its 200 is flushed, so the ack can win the store
-    // mutex and make the dispatcher's recordOutcome('sent') a no-op: 0 or 1.
-    expect(record.attempts).toBeLessThanOrEqual(1);
-    expect(record.history.length).toBeLessThanOrEqual(1);
+    expect(record.attempts).toBe(1);
+    expect(record.history.map((h) => h.outcome)).toEqual(['sent']);
+    expect(record.lastSentAt).toEqual(expect.any(String));
 
     const res = await request(t.baseUrl)
       .get(`/${record.confirmationCode}`)
@@ -98,7 +102,7 @@ describe('delivery (e2e)', () => {
       status: 'acked',
       ackedAt: expect.any(String),
     });
-    expect(res.body.delivery.attempts).toBeLessThanOrEqual(1);
+    expect(res.body.delivery.attempts).toBe(1);
   });
 
   it('offline then online: retries with backoff until acked, device receives exactly one', async () => {
@@ -203,7 +207,10 @@ describe('delivery (e2e)', () => {
     await settle(200);
     const after = await outbox(deliveryId);
     expect(after.status).toBe('acked');
-    expect(before.attempts).toBe(attemptsAtAck);
+    // An attempt in flight at ack time is still counted when it lands (at
+    // most one: the lease allows one send per record); nothing starts after.
+    expect(before.attempts - attemptsAtAck).toBeGreaterThanOrEqual(0);
+    expect(before.attempts - attemptsAtAck).toBeLessThanOrEqual(1);
     expect(after.attempts).toBe(before.attempts);
   });
 });

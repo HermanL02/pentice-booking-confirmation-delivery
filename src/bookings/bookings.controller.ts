@@ -12,7 +12,11 @@ import {
 import { ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import type { Response } from 'express';
-import { BookingsService, type BookingView } from './bookings.service';
+import {
+  BookingsService,
+  type BookingView,
+  type CreateBookingResult,
+} from './bookings.service';
 import { ConfirmationCodePipe } from './confirmation-code.pipe';
 import { CreateBookingDto } from './dto/create-booking.dto';
 
@@ -27,8 +31,26 @@ export class BookingsController {
   @ApiResponse({
     status: 202,
     description: 'Booking created; delivery pending',
+    schema: {
+      example: {
+        reservationId: 'R123',
+        deliveryId: '724de8f9-6d0a-485a-8960-3e3d81913aa4',
+        status: 'pending',
+      },
+    },
   })
-  @ApiResponse({ status: 200, description: 'Repeat of an existing booking' })
+  @ApiResponse({
+    status: 200,
+    description:
+      "Repeat of an existing booking; status is the delivery's current status",
+    schema: {
+      example: {
+        reservationId: 'R123',
+        deliveryId: '724de8f9-6d0a-485a-8960-3e3d81913aa4',
+        status: 'acked',
+      },
+    },
+  })
   @ApiResponse({
     status: 409,
     description: 'reservationId already booked with a different guest',
@@ -36,7 +58,7 @@ export class BookingsController {
   async create(
     @Body() dto: CreateBookingDto,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<{ reservationId: string; deliveryId: string; status: 'pending' }> {
+  ): Promise<Omit<CreateBookingResult, 'created'>> {
     const { created, reservationId, deliveryId, status } =
       await this.bookings.create(dto);
     if (!created) res.status(HttpStatus.OK);
