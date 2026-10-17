@@ -8,7 +8,10 @@ import { AppModule } from './app.module';
 import { appConfig } from './config/app.config';
 
 export async function createApp(): Promise<INestApplication> {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+    abortOnError: false,
+  });
   app.useLogger(app.get(Logger));
   app.use(helmet());
   app.enableShutdownHooks();
@@ -38,5 +41,8 @@ async function bootstrap(): Promise<void> {
 }
 
 if (require.main === module) {
-  void bootstrap();
+  bootstrap().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 }
