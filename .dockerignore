@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+data
+.git
+.github
+.superpowers
+docs
+test
+scripts
+*.md
+.env*
