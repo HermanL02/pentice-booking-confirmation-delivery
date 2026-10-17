@@ -33,9 +33,12 @@ function restoreEnv(snapshot: NodeJS.ProcessEnv): void {
 export async function createTestApp(
   env: Record<string, string> = {},
 ): Promise<TestApp> {
-  const port = await getFreePort();
+  // PORT and DATA_FILE overrides let a test boot a second app on the same
+  // port and data file (restart scenarios). A caller-supplied DATA_FILE is the
+  // caller's to clean up; close() only removes the helper's own temp dir.
+  const port = env.PORT === undefined ? await getFreePort() : Number(env.PORT);
   const dataDir = await mkdtemp(join(tmpdir(), 'bcd-e2e-'));
-  const dataFile = join(dataDir, 'store.json');
+  const dataFile = env.DATA_FILE ?? join(dataDir, 'store.json');
   const baseUrl = `http://127.0.0.1:${port}`;
 
   const snapshot = { ...process.env };
