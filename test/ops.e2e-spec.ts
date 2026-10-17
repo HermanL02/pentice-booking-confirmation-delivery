@@ -92,4 +92,26 @@ describe('ops (e2e)', () => {
       .set('x-api-key', OPS_API_KEY)
       .expect(404);
   });
+
+  it('GET /metrics requires the key and returns a snapshot', async () => {
+    await request(t.baseUrl).get('/metrics').expect(401);
+
+    const res = await request(t.baseUrl)
+      .get('/metrics')
+      .set('x-api-key', OPS_API_KEY)
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      pending: expect.any(Number),
+      acked: expect.any(Number),
+      needsAttention: expect.any(Number),
+      attemptsHistogram: { '1': expect.any(Number) },
+      timeToAckMs: { p50: null, p95: null, p99: null },
+      ticks: expect.any(Number),
+      transportFailures: expect.any(Number),
+      lastTickAt: expect.any(String),
+    });
+    expect(res.body.ticks).toBeGreaterThan(0);
+    expect(res.body.transportFailures).toBeGreaterThan(0);
+  });
 });

@@ -6,6 +6,7 @@ import type { appConfig } from '../config/app.config';
 import type { deliveryConfig } from '../config/delivery.config';
 import type { OutboxRecord } from '../storage/storage.port';
 import { DispatcherService } from './dispatcher.service';
+import type { MetricsService } from './metrics.service';
 import { newOutboxRecord } from './outbox.record';
 import type { OutboxService } from './outbox.service';
 import { TransportError } from './transport/delivery-transport.port';
@@ -41,6 +42,7 @@ describe('DispatcherService', () => {
     releaseLease: jest.Mock;
   };
   let transport: { send: jest.Mock };
+  let metrics: { recordTick: jest.Mock; incrementTransportFailures: jest.Mock };
   let registry: {
     addInterval: jest.Mock;
     deleteInterval: jest.Mock;
@@ -62,6 +64,7 @@ describe('DispatcherService', () => {
       delivery,
       app,
       registry as unknown as SchedulerRegistry,
+      metrics as unknown as MetricsService,
     );
   };
 
@@ -81,6 +84,7 @@ describe('DispatcherService', () => {
         .mockImplementation((ids: string[]) => Promise.resolve(ids.length)),
     };
     transport = { send: jest.fn().mockResolvedValue('sent') };
+    metrics = { recordTick: jest.fn(), incrementTransportFailures: jest.fn() };
     registry = {
       addInterval: jest.fn(),
       deleteInterval: jest.fn(),
@@ -133,6 +137,24 @@ describe('DispatcherService', () => {
       NOW,
       'timed out',
     );
+  });
+
+  it('tick records the tick and each transport failure in metrics', async () => {
+    outbox.claimDue.mockResolvedValue([
+      record('d1'),
+      record('d2'),
+      record('d3'),
+    ]);
+    transport.send
+      .mockRejectedValueOnce(new TransportError('HTTP 503', 'failed'))
+      .mockRejectedValueOnce(new Error('not a transport error'))
+      .mockResolvedValueOnce('sent');
+    const service = build();
+
+    await service.tick();
+
+    expect(metrics.recordTick).toHaveBeenCalledWith(NOW);
+    expect(metrics.incrementTransportFailures).toHaveBeenCalledTimes(1);
   });
 
   it('tick does not overlap', async () => {
