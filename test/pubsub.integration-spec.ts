@@ -1,9 +1,15 @@
 import { PubSub } from '@google-cloud/pubsub';
 import request from 'supertest';
+import { PubSubConsumer } from '@/delivery/transport/pubsub.consumer';
+import { PubSubTransport } from '@/delivery/transport/pubsub.transport';
+import type { DeliveryPayload } from '@/delivery/transport/delivery-transport.port';
 import { setupPubSubEmulator } from '../scripts/setup-pubsub-emulator';
 import { createTestApp, type TestApp } from './helpers/create-test-app';
 import { getDelivery, type DeliveryView } from './helpers/ops';
 import { waitFor } from './helpers/wait-for';
+
+const settle = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Runs only against a Pub/Sub emulator: PUBSUB_EMULATOR_HOST=localhost:8085.
 const d = process.env.PUBSUB_EMULATOR_HOST ? describe : describe.skip;
@@ -21,6 +27,21 @@ const SUBSCRIPTION = `confirmation-deliveries-it-${process.pid}-${Date.now()}`;
 d('pub/sub transport (integration)', () => {
   let t: TestApp;
   let seq = 0;
+  // Every publish and every consumed message, by deliveryId. A broker
+  // redelivery shows up as a repeated message id and more handled than
+  // published messages.
+  let publishSpy: jest.SpiedFunction<PubSubTransport['send']>;
+  let handleSpy: jest.SpiedFunction<PubSubConsumer['handle']>;
+  const publishedFor = (id: string) =>
+    publishSpy.mock.calls.filter(([p]) => p.deliveryId === id);
+  const handledFor = (id: string) =>
+    handleSpy.mock.calls
+      .map(([m]) => ({
+        messageId: m.id,
+        deliveryId: (JSON.parse(m.data.toString()) as DeliveryPayload)
+          .deliveryId,
+      }))
+      .filter((h) => h.deliveryId === id);
 
   const setDevice = (online: boolean) =>
     request(t.baseUrl)
@@ -58,6 +79,9 @@ d('pub/sub transport (integration)', () => {
   };
 
   beforeAll(async () => {
+    // Call-through spies: the real transport and consumer still run.
+    publishSpy = jest.spyOn(PubSubTransport.prototype, 'send');
+    handleSpy = jest.spyOn(PubSubConsumer.prototype, 'handle');
     await setupPubSubEmulator({ topic: TOPIC, subscription: SUBSCRIPTION });
     t = await createTestApp({
       PUBSUB_EMULATOR_HOST: process.env.PUBSUB_EMULATOR_HOST as string,
@@ -69,6 +93,7 @@ d('pub/sub transport (integration)', () => {
 
   afterAll(async () => {
     await t?.close();
+    jest.restoreAllMocks();
     const pubsub = new PubSub({ projectId: PROJECT_ID });
     await pubsub
       .subscription(SUBSCRIPTION)
@@ -97,7 +122,10 @@ d('pub/sub transport (integration)', () => {
     // The device acks before its 200 reaches the consumer, so the ack can win
     // the store mutex and make recordOutcome('sent') a no-op: 0 or 1 attempts.
     expect(record.attempts).toBeLessThanOrEqual(1);
-    expect(['sent', undefined]).toContain(record.history[0]?.outcome);
+    // If history is non-empty, its first entry is 'sent'.
+    expect(record.history.slice(0, 1).map((h) => h.outcome)).toEqual(
+      record.history.length > 0 ? ['sent'] : [],
+    );
   });
 
   it('offline then online: the outbox retries, the broker never redelivers', async () => {
@@ -113,11 +141,6 @@ d('pub/sub transport (integration)', () => {
     expect(pending.history.map((h) => h.outcome)).toEqual(
       pending.history.map(() => 'failed'),
     );
-    // One outbox attempt per history entry, numbered in order: each failure
-    // was recorded once and acked, never retried by Pub/Sub itself.
-    expect(pending.history.map((h) => h.attempt)).toEqual(
-      pending.history.map((_, i) => i + 1),
-    );
 
     await setDevice(true);
     await waitForRecord(
@@ -129,5 +152,20 @@ d('pub/sub transport (integration)', () => {
     const items = await inbox();
     expect(items).toHaveLength(1);
     expect(items[0].deliveryId).toBe(deliveryId);
+
+    // Let the last message finish, then give a redelivery time to show up.
+    await waitFor(
+      () => handledFor(deliveryId).length >= publishedFor(deliveryId).length,
+      { label: 'every published message handled' },
+    );
+    await settle(500);
+    const seen = handledFor(deliveryId).map((h) => h.messageId);
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).toHaveLength(publishedFor(deliveryId).length);
+    const final = await getDelivery(t.baseUrl, deliveryId);
+    // Each handled message records at most one outcome (the last can lose
+    // the race to the ack), and each outcome came from a handled message.
+    expect(final.history.length).toBeLessThanOrEqual(seen.length);
+    expect(final.history.length).toBeGreaterThanOrEqual(seen.length - 1);
   });
 });

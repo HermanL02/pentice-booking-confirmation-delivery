@@ -22,22 +22,65 @@ const payload: DeliveryPayload = {
   ackUrl: 'http://localhost:3000/deliveries/d1/ack',
 };
 
-function fakeMessage(data: string): { message: Message; ack: jest.Mock } {
+interface FakeMessage {
+  message: Message;
+  ack: jest.Mock;
+  nack: jest.Mock;
+}
+
+function fakeMessage(data: string): FakeMessage {
   const ack = jest.fn();
+  const nack = jest.fn();
   const message = {
     id: 'm1',
     data: Buffer.from(data),
     ack,
+    nack,
   } as unknown as Message;
-  return { message, ack };
+  return { message, ack, nack };
+}
+
+/**
+ * Mimics @google-cloud/pubsub's Subscription: removing the last 'message'
+ * listener, or closing with the default NACK behaviour, nacks every message
+ * not yet acked.
+ */
+function fakeSubscription() {
+  const outstanding = new Set<FakeMessage>();
+  const nackOutstanding = () => {
+    for (const m of outstanding) m.nack();
+    outstanding.clear();
+  };
+  const state: { options: unknown } = { options: undefined };
+  const subscription = Object.assign(new EventEmitter(), state, {
+    close: jest.fn(() => {
+      const behavior = (
+        subscription.options as { closeOptions?: { behavior?: string } }
+      )?.closeOptions?.behavior;
+      if (behavior !== 'WAIT') nackOutstanding();
+      return Promise.resolve();
+    }),
+    deliver(m: FakeMessage) {
+      outstanding.add(m);
+      m.ack.mockImplementation(() => outstanding.delete(m));
+      subscription.emit('message', m.message);
+    },
+  });
+  subscription.on('removeListener', (event: string) => {
+    if (event === 'message' && subscription.listenerCount('message') === 0) {
+      nackOutstanding();
+    }
+  });
+  return subscription;
 }
 
 function setup(send: jest.Mock) {
-  const subscription = Object.assign(new EventEmitter(), {
-    close: jest.fn().mockResolvedValue(undefined),
-  });
+  const subscription = fakeSubscription();
   const pubsub = {
-    subscription: jest.fn().mockReturnValue(subscription),
+    subscription: jest.fn((_name: string, options: unknown) => {
+      subscription.options = options;
+      return subscription;
+    }),
   } as unknown as PubSub;
   const recordOutcome = jest.fn().mockResolvedValue(null);
   const outbox = { recordOutcome } as unknown as OutboxService;
@@ -55,13 +98,16 @@ function setup(send: jest.Mock) {
 
 describe('PubSubConsumer', () => {
   let warn: jest.SpyInstance;
+  let error: jest.SpyInstance;
 
   beforeEach(() => {
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     warn = jest
       .spyOn(Logger.prototype, 'warn')
       .mockImplementation(() => undefined);
-    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    error = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
   });
 
   afterEach(() => jest.restoreAllMocks());
@@ -120,8 +166,8 @@ describe('PubSubConsumer', () => {
     );
     const { consumer, subscription, recordOutcome } = setup(send);
     consumer.onModuleInit();
-    const { message, ack } = fakeMessage(JSON.stringify(payload));
-    subscription.emit('message', message);
+    const m = fakeMessage(JSON.stringify(payload));
+    subscription.deliver(m);
     expect(send).toHaveBeenCalledTimes(1);
 
     let destroyed = false;
@@ -130,14 +176,59 @@ describe('PubSubConsumer', () => {
     });
     await new Promise((r) => setImmediate(r));
     expect(destroyed).toBe(false);
-    expect(subscription.listenerCount('message')).toBe(0);
     expect(subscription.close).not.toHaveBeenCalled();
 
     finishSend('sent');
     await destroying;
 
     expect(recordOutcome).toHaveBeenCalledWith('d1', 'sent', NOW);
-    expect(ack).toHaveBeenCalledTimes(1);
     expect(subscription.close).toHaveBeenCalledTimes(1);
+    expect(m.ack.mock.invocationCallOrder[0]).toBeLessThan(
+      subscription.close.mock.invocationCallOrder[0],
+    );
+    expect(m.nack).not.toHaveBeenCalled();
+  });
+
+  it('in-flight messages are acked, never nacked, across shutdown', async () => {
+    const pending: ((v: 'sent') => void)[] = [];
+    const send = jest.fn(
+      () => new Promise<'sent'>((resolve) => pending.push(resolve)),
+    );
+    const { consumer, subscription } = setup(send);
+    consumer.onModuleInit();
+    const first = fakeMessage(JSON.stringify(payload));
+    subscription.deliver(first);
+
+    const destroying = consumer.onModuleDestroy();
+    // Arrives during the drain: still handled, not dropped or nacked.
+    const second = fakeMessage(
+      JSON.stringify({ ...payload, deliveryId: 'd2' }),
+    );
+    subscription.deliver(second);
+    await new Promise((r) => setImmediate(r));
+    for (const resolve of pending) resolve('sent');
+    await new Promise((r) => setImmediate(r));
+    for (const resolve of pending) resolve('sent');
+    await destroying;
+
+    for (const m of [first, second]) {
+      expect(m.ack).toHaveBeenCalledTimes(1);
+      expect(m.nack).not.toHaveBeenCalled();
+    }
+    expect(subscription.options).toMatchObject({
+      closeOptions: { behavior: 'WAIT' },
+    });
+    expect(subscription.listenerCount('message')).toBe(0);
+  });
+
+  it('a failing subscription.close is logged and does not reject', async () => {
+    const { consumer, subscription } = setup(jest.fn());
+    consumer.onModuleInit();
+    subscription.close.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(consumer.onModuleDestroy()).resolves.toBeUndefined();
+
+    expect(error).toHaveBeenCalled();
+    expect(subscription.listenerCount('error')).toBe(0);
   });
 });

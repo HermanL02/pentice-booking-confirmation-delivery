@@ -69,7 +69,7 @@ jobs:
           docker logs pubsub-emulator
           exit 1
       - run: pnpm emulator:setup
-      - run: pnpm test:e2e -- pubsub
+      - run: pnpm test:e2e -- pubsub.integration
       - name: Stop Pub/Sub emulator
         if: always()
         run: docker rm -f pubsub-emulator

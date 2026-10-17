@@ -1,4 +1,10 @@
-import type { Message, PubSub, Subscription } from '@google-cloud/pubsub';
+import {
+  Duration,
+  type Message,
+  type PubSub,
+  type Subscription,
+  type SubscriberOptions,
+} from '@google-cloud/pubsub';
 import {
   Logger,
   type OnModuleDestroy,
@@ -21,6 +27,17 @@ import { PUBSUB_CLIENT } from './pubsub.client';
 import { WebhookTransport } from './webhook.transport';
 
 const MAX_MESSAGES = 10;
+
+type CloseBehavior = NonNullable<
+  NonNullable<SubscriberOptions['closeOptions']>['behavior']
+>;
+/**
+ * SubscriberCloseBehaviors.WaitForProcessing; the enum is not re-exported from
+ * the package index, the type keeps this literal honest. The default (NACK)
+ * would nack every message still being handled on close, and Pub/Sub would
+ * redeliver what the consumer is about to finish.
+ */
+const WAIT_FOR_PROCESSING: CloseBehavior = 'WAIT';
 
 /**
  * Pulls handed-off deliveries from Pub/Sub, posts them to the guest device and
@@ -54,6 +71,10 @@ export class PubSubConsumer implements OnModuleInit, OnModuleDestroy {
     }
     this.subscription = this.pubsub.subscription(this.subscriptionName, {
       flowControl: { maxMessages: MAX_MESSAGES },
+      closeOptions: {
+        behavior: WAIT_FOR_PROCESSING,
+        timeout: Duration.from({ milliseconds: this.drainMs }),
+      },
     });
     this.subscription.on('message', this.onMessage);
     this.subscription.on('error', this.onError);
@@ -93,30 +114,51 @@ export class PubSubConsumer implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Keeps the 'message' listener attached while draining: removing the last
+   * one makes the library close (and nack) on its own. Messages that arrive
+   * meanwhile are handled normally (flow control bounds them); close() then
+   * stops the stream and waits for the rest.
+   */
   async onModuleDestroy(): Promise<void> {
     const subscription = this.subscription;
     if (subscription === null) return;
-    subscription.removeListener('message', this.onMessage);
-    if (this.inFlight.size > 0) {
-      let timer: NodeJS.Timeout | undefined;
-      const timedOut = new Promise<true>((resolve) => {
-        timer = setTimeout(() => resolve(true), this.drainMs);
-        timer.unref();
-      });
-      const drained = Promise.allSettled([...this.inFlight]).then(() => false);
-      try {
-        if (await Promise.race([drained, timedOut])) {
-          this.logger.warn(
-            `shutdown drain limit reached with ${this.inFlight.size} message(s) still in flight`,
-          );
-        }
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-    await subscription.close();
-    subscription.removeListener('error', this.onError);
     this.subscription = null;
+    await this.drain();
+    try {
+      await subscription.close();
+    } catch (err) {
+      this.logger.error(`closing subscription failed: ${String(err)}`);
+    } finally {
+      subscription.removeListener('message', this.onMessage);
+      subscription.removeListener('error', this.onError);
+    }
+  }
+
+  private async drain(): Promise<void> {
+    if (this.inFlight.size === 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, this.drainMs);
+      timer.unref();
+    });
+    try {
+      // Loop: handlers that start during the drain are awaited too.
+      while (this.inFlight.size > 0 && !timedOut) {
+        await Promise.race([Promise.allSettled([...this.inFlight]), deadline]);
+      }
+      if (timedOut) {
+        this.logger.warn(
+          `shutdown drain limit reached with ${this.inFlight.size} message(s) still in flight`,
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private track(op: Promise<void>): Promise<void> {

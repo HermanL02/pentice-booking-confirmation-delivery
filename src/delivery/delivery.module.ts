@@ -9,7 +9,10 @@ import { MetricsService } from './metrics.service';
 import { OpsController } from './ops.controller';
 import { OutboxService } from './outbox.service';
 import { DELIVERY_TRANSPORT } from './transport/delivery-transport.port';
-import { pubsubClientProvider } from './transport/pubsub.client';
+import {
+  PubSubClientLifecycle,
+  pubsubClientProvider,
+} from './transport/pubsub.client';
 import { pubsubConsumerProvider } from './transport/pubsub.consumer';
 import { deliveryTransportProvider } from './transport/transport.provider';
 
@@ -25,6 +28,7 @@ import { deliveryTransportProvider } from './transport/transport.provider';
     OutboxService,
     MetricsService,
     pubsubClientProvider,
+    PubSubClientLifecycle,
     deliveryTransportProvider,
     DispatcherService,
     // No-ops unless PUBSUB_EMULATOR_HOST is set.
