@@ -34,6 +34,8 @@ export class OutboxService {
     const nowMs = now.getTime();
     return this.storage.mutate((draft) => {
       const records = Object.values(draft.outbox);
+      // Expired here => never claimed in this call, even if backoff is 0.
+      const expired = new Set<string>();
       for (const record of records) {
         if (
           record.status === 'pending' &&
@@ -41,11 +43,15 @@ export class OutboxService {
           Date.parse(record.leaseUntil) < nowMs
         ) {
           this.applyOutcome(record, 'lease-expired', now);
+          expired.add(record.deliveryId);
         }
       }
       const claimed: OutboxRecord[] = [];
       for (const record of records) {
-        if (this.isClaimable(record, nowMs)) {
+        if (
+          !expired.has(record.deliveryId) &&
+          this.isClaimable(record, nowMs)
+        ) {
           record.leaseUntil = new Date(nowMs + leaseMs).toISOString();
           claimed.push(record);
         }

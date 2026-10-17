@@ -117,6 +117,26 @@ describe('OutboxService', () => {
     ]);
   });
 
+  it('claimDue does not claim a record whose lease it just expired even when backoff is zero', async () => {
+    service = new OutboxService(
+      storage,
+      new BackoffPolicy(BASE_MS, MAX_MS, () => 0),
+      { attentionAfterAttempts: 3 } as ConfigType<typeof deliveryConfig>,
+    );
+    seed('d1', { leaseUntil: at(-1), nextAttemptAt: at(-60_000) });
+
+    await expect(service.claimDue(NOW, LEASE_MS)).resolves.toEqual([]);
+    const record = storage.state.outbox.d1;
+    expect(record.attempts).toBe(1);
+    expect(record.leaseUntil).toBeNull();
+    expect(record.nextAttemptAt).toBe(NOW.toISOString());
+    expect(record.history.map((h) => h.outcome)).toEqual(['lease-expired']);
+
+    const claimed = await service.claimDue(NOW, LEASE_MS);
+    expect(claimed.map((r) => r.deliveryId)).toEqual(['d1']);
+    expect(storage.state.outbox.d1.leaseUntil).toBe(at(LEASE_MS));
+  });
+
   it('recordOutcome sent increments attempts, sets lastSentAt, clears lease, schedules next attempt', async () => {
     seed('d1', { leaseUntil: at(LEASE_MS) });
 
