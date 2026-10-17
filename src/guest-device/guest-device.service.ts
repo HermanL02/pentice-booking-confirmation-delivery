@@ -60,22 +60,28 @@ export class GuestDeviceService {
   }
 
   async acknowledge(ackUrl: string, ackToken: string): Promise<void> {
-    for (let attempt = 1; attempt <= ACK_TRIES; attempt++) {
-      try {
-        const res = await this.fetchFn(ackUrl, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ackToken }),
-        });
-        await res.body?.cancel().catch(() => undefined);
-        if (res.ok) return;
-      } catch {
-        // fall through to retry
+    try {
+      for (let attempt = 1; attempt <= ACK_TRIES; attempt++) {
+        try {
+          const res = await this.fetchFn(ackUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ackToken }),
+          });
+          await res.body?.cancel().catch(() => undefined);
+          if (res.ok) return;
+        } catch {
+          // fall through to retry
+        }
+        if (attempt < ACK_TRIES) {
+          await new Promise<void>((r) => {
+            setTimeout(r, ACK_RETRY_MS).unref();
+          });
+        }
       }
-      if (attempt < ACK_TRIES) {
-        await new Promise<void>((r) => setTimeout(r, ACK_RETRY_MS));
-      }
+      this.logger.warn(`ack failed after ${ACK_TRIES} tries: ${ackUrl}`);
+    } catch {
+      // acknowledge must never reject
     }
-    this.logger.warn(`ack failed after ${ACK_TRIES} tries: ${ackUrl}`);
   }
 }

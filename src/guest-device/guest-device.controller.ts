@@ -28,7 +28,9 @@ export class GuestDeviceController {
       throw new ServiceUnavailableException('guest device is offline');
     }
     if (result === 'received' || result === 'duplicate') {
-      void this.service.acknowledge(dto.ackUrl, dto.ackToken);
+      void this.service
+        .acknowledge(dto.ackUrl, dto.ackToken)
+        .catch(() => undefined);
     }
     return { result };
   }

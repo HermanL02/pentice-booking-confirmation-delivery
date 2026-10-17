@@ -66,4 +66,23 @@ describe('GuestDeviceService', () => {
       jest.useRealTimers();
     }
   });
+
+  it('acknowledge resolves even when the logger throws', async () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {
+      throw new Error('transport down');
+    });
+    try {
+      const fetchFn = jest.fn().mockRejectedValue(new Error('down'));
+      const svc = new GuestDeviceService(fetchFn, () => 0.5);
+      const p = svc.acknowledge('http://x/ack', 'tok');
+      await jest.advanceTimersByTimeAsync(100);
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(p).resolves.toBeUndefined();
+      expect(fetchFn).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 });
