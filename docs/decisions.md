@@ -112,9 +112,9 @@ change.
 
 ## 5. Redis excluded; Google Pub/Sub is an optional transport
 
-**Context.** The brief mentions a queue as an option. Herman runs Google
-Pub/Sub in production and wanted the broker path to be one he can defend
-from experience. A second broker would add a dependency with no new risk
+**Context.** The brief rules out a database but says nothing about message
+brokers. Herman runs Google Pub/Sub in production and wanted the broker path
+to be one he can defend from experience. A second broker would add a dependency with no new risk
 covered.
 
 **Decision.** Redis is not used anywhere. `PubSubTransport` is built and
@@ -186,8 +186,8 @@ The code space is 36^5 = 60,466,176 rather than 62^5.
 
 ## 9. Unknown code returns 404 with a JSON body
 
-**Context.** The brief says an unknown code should not resolve, but not what
-the response looks like.
+**Context.** The brief requires `GET /:code` to return the booking, and says
+nothing about what an unknown code should return.
 
 **Decision.** `GET /:code` for an unknown code returns 404 with Nest's
 default body, `{ "statusCode": 404, "message": "booking not found", "error":
