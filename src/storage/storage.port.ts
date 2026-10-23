@@ -4,6 +4,9 @@ export interface Booking {
   confirmationCode: string;
   deliveryId: string;
   createdAt: string;
+  cancelledAt?: string;
+  /** The outbox record that tells the guest about the cancellation. */
+  cancellationDeliveryId?: string;
 }
 
 export type OutboxOutcome = 'sent' | 'failed' | 'timeout' | 'lease-expired';
@@ -21,7 +24,10 @@ export interface OutboxRecord {
   reservationId: string;
   guest: string;
   ackToken: string;
-  status: 'pending' | 'acked';
+  status: 'pending' | 'acked' | 'cancelled';
+  kind: 'confirmation' | 'cancellation';
+  /** Not claimable while this record holds a live lease (its send is in flight). */
+  waitsFor: string | null;
   attempts: number;
   nextAttemptAt: string;
   leaseUntil: string | null;

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -63,6 +64,18 @@ export class BookingsController {
       await this.bookings.create(dto);
     if (!created) res.status(HttpStatus.OK);
     return { reservationId, deliveryId, status };
+  }
+
+  @Delete('bookings/:reservationId')
+  @UseGuards(ThrottlerGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiResponse({
+    status: 204,
+    description: 'Booking cancelled (also on a repeat); the guest is notified',
+  })
+  @ApiResponse({ status: 404, description: 'Unknown reservationId' })
+  cancel(@Param('reservationId') reservationId: string): Promise<void> {
+    return this.bookings.cancel(reservationId);
   }
 
   @Get(':code')

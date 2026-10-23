@@ -4,6 +4,7 @@ import { OutboxService } from './outbox.service';
 export interface MetricsSnapshot {
   pending: number;
   acked: number;
+  cancelled: number;
   /** Pending records flagged for attention; an acked record no longer needs any. */
   needsAttention: number;
   /** Records by attempts made; records with no attempt yet are not counted. */
@@ -45,11 +46,14 @@ export class MetricsService {
     const histogram = { '1': 0, '2-3': 0, '4-10': 0, '11+': 0 };
     const ackMs: number[] = [];
     let pending = 0;
+    let cancelled = 0;
     let needsAttention = 0;
     for (const r of records) {
       if (r.status === 'pending') {
         pending += 1;
         if (r.needsAttention) needsAttention += 1;
+      } else if (r.status === 'cancelled') {
+        cancelled += 1;
       } else if (r.ackedAt !== null) {
         ackMs.push(Date.parse(r.ackedAt) - Date.parse(r.createdAt));
       }
@@ -59,7 +63,8 @@ export class MetricsService {
     ackMs.sort((a, b) => a - b);
     return {
       pending,
-      acked: records.length - pending,
+      acked: records.length - pending - cancelled,
+      cancelled,
       needsAttention,
       attemptsHistogram: histogram,
       timeToAckMs: {

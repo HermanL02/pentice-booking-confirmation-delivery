@@ -56,6 +56,7 @@ describe('bookings (e2e)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
+      status: 'active',
       reservationId: 'R-get',
       guest: 'ana@example.com',
       confirmationCode: code,

@@ -4,9 +4,9 @@ import { IsBoolean, IsIn, IsOptional } from 'class-validator';
 import type { OutboxRecord } from '../../storage/storage.port';
 
 export class ListDeliveriesQuery {
-  @ApiPropertyOptional({ enum: ['pending', 'acked'] })
+  @ApiPropertyOptional({ enum: ['pending', 'acked', 'cancelled'] })
   @IsOptional()
-  @IsIn(['pending', 'acked'])
+  @IsIn(['pending', 'acked', 'cancelled'])
   status?: OutboxRecord['status'];
 
   @ApiPropertyOptional({ type: Boolean })

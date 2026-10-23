@@ -30,6 +30,7 @@ export interface CreateBookingResult {
 }
 
 export interface BookingView {
+  status: 'active' | 'cancelled';
   reservationId: string;
   guest: string;
   confirmationCode: string;
@@ -98,6 +99,41 @@ export class BookingsService {
     return result;
   }
 
+  /** Idempotent: a repeat finds cancelledAt set and changes nothing. */
+  async cancel(reservationId: string): Promise<void> {
+    await this.storage.mutate((draft) => {
+      const code = own(draft.reservationIndex, reservationId);
+      const booking =
+        code === undefined ? undefined : own(draft.bookings, code);
+      if (booking === undefined) {
+        throw new NotFoundException('reservation not found');
+      }
+      if (booking.cancelledAt !== undefined) return;
+
+      const now = this.clock.now();
+      const confirmation = own(draft.outbox, booking.deliveryId);
+      // An acked confirmation stays acked: the guest did receive it. The lease
+      // is left alone, so a send in flight still holds back the notice.
+      if (confirmation?.status === 'pending') {
+        confirmation.status = 'cancelled';
+      }
+      const noticeId = randomUUID();
+      draft.outbox[noticeId] = newOutboxRecord(
+        {
+          deliveryId: noticeId,
+          confirmationCode: booking.confirmationCode,
+          reservationId,
+          guest: booking.guest,
+          kind: 'cancellation',
+          waitsFor: booking.deliveryId,
+        },
+        now,
+      );
+      booking.cancelledAt = now.toISOString();
+      booking.cancellationDeliveryId = noticeId;
+    });
+  }
+
   async findByCode(code: string): Promise<BookingView> {
     const state = await this.storage.read();
     const booking = own(state.bookings, code.toLowerCase());
@@ -106,6 +142,7 @@ export class BookingsService {
     }
     const record = own(state.outbox, booking.deliveryId);
     return {
+      status: booking.cancelledAt === undefined ? 'active' : 'cancelled',
       reservationId: booking.reservationId,
       guest: booking.guest,
       confirmationCode: booking.confirmationCode,

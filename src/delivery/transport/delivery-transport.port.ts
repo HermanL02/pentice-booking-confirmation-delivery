@@ -2,6 +2,7 @@ import type { OutboxRecord } from '../../storage/storage.port';
 
 export interface DeliveryPayload {
   deliveryId: string;
+  kind: OutboxRecord['kind'];
   confirmationCode: string;
   reservationId: string;
   guest: string;
@@ -34,6 +35,7 @@ export function toPayload(
 ): DeliveryPayload {
   return {
     deliveryId: record.deliveryId,
+    kind: record.kind,
     confirmationCode: record.confirmationCode,
     reservationId: record.reservationId,
     guest: record.guest,
