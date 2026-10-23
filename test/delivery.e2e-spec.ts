@@ -1,6 +1,12 @@
 import request from 'supertest';
 import { createTestApp, type TestApp } from './helpers/create-test-app';
-import { getDelivery, readAckToken, type DeliveryView } from './helpers/ops';
+import {
+  getDelivery,
+  listDeliveries,
+  OPS_API_KEY,
+  readAckToken,
+  type DeliveryView,
+} from './helpers/ops';
 import { waitFor } from './helpers/wait-for';
 
 const settle = (ms: number) =>
@@ -37,7 +43,7 @@ describe('delivery (e2e)', () => {
 
   const inbox = async () =>
     (await request(t.baseUrl).get('/guest-device/inbox').expect(200)).body
-      .items as { deliveryId: string }[];
+      .items as { deliveryId: string; kind?: string }[];
 
   const book = async (): Promise<{
     reservationId: string;
@@ -179,6 +185,48 @@ describe('delivery (e2e)', () => {
     expect(first.body).toEqual({ status: 'acked' });
     expect(second.body).toEqual({ status: 'already-acked' });
     expect((await outbox(deliveryId)).status).toBe('acked');
+  });
+
+  it('cancel: the confirmation stops, the guest gets exactly one cancellation notice', async () => {
+    await setDevice(false);
+    const { reservationId, deliveryId } = await book();
+
+    await request(t.baseUrl).delete(`/bookings/${reservationId}`).expect(204);
+    await request(t.baseUrl).delete(`/bookings/${reservationId}`).expect(204);
+    await request(t.baseUrl).delete('/bookings/R-del-unknown').expect(404);
+
+    const notices = (await listDeliveries(t.baseUrl)).filter(
+      (r) => r.reservationId === reservationId && r.kind === 'cancellation',
+    );
+    expect(notices).toHaveLength(1);
+    const noticeId = notices[0].deliveryId;
+
+    await setDevice(true);
+    await waitForAcked(noticeId);
+    await settle(300); // several ticks: nothing else may arrive
+
+    const items = await inbox();
+    expect(items).toEqual([
+      expect.objectContaining({ deliveryId: noticeId, kind: 'cancellation' }),
+    ]);
+    const confirmation = await outbox(deliveryId);
+    expect(confirmation.status).toBe('cancelled');
+
+    const res = await request(t.baseUrl)
+      .get(`/${confirmation.confirmationCode}`)
+      .expect(200);
+    expect(res.body).toMatchObject({
+      status: 'cancelled',
+      delivery: { status: 'cancelled' },
+    });
+
+    const cancelled = await listDeliveries(t.baseUrl, { status: 'cancelled' });
+    expect(cancelled.map((r) => r.deliveryId)).toContain(deliveryId);
+    const metrics = await request(t.baseUrl)
+      .get('/metrics')
+      .set('x-api-key', OPS_API_KEY)
+      .expect(200);
+    expect(metrics.body.cancelled).toBeGreaterThanOrEqual(1);
   });
 
   it('ack for an unknown delivery is 404', async () => {

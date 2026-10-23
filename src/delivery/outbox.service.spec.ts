@@ -1,5 +1,6 @@
 import type { ConfigType } from '@nestjs/config';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
+import { BookingsService } from '../bookings/bookings.service';
 import type { deliveryConfig } from '../config/delivery.config';
 import {
   emptyState,
@@ -391,4 +392,65 @@ describe('OutboxService', () => {
       });
     },
   );
+
+  describe('cancel while the confirmation send is in flight', () => {
+    it('holds the cancellation notice until the send reports back, and never reopens the confirmation', async () => {
+      const bookings = new BookingsService(
+        storage,
+        { now: () => NOW },
+        events as unknown as EventEmitter2,
+      );
+      const { deliveryId } = await bookings.create({
+        reservationId: 'R1',
+        guest: 'ana@example.com',
+      });
+
+      // The dispatcher claims the confirmation; transport.send is now in flight.
+      expect(await service.claimOne(deliveryId, NOW, LEASE_MS)).not.toBeNull();
+
+      await bookings.cancel('R1');
+
+      expect(storage.state.outbox[deliveryId].status).toBe('cancelled');
+      const notice = Object.values(storage.state.outbox).find(
+        (r) => r.kind === 'cancellation',
+      );
+      expect(notice).toMatchObject({
+        status: 'pending',
+        guest: 'ana@example.com',
+        waitsFor: deliveryId,
+      });
+
+      // A tick during the send must not start the notice, or it could
+      // overtake the confirmation and the guest would see "confirmed" last.
+      await expect(service.claimDue(NOW, LEASE_MS)).resolves.toEqual([]);
+
+      // The in-flight send reports back: counted, lease cleared, still cancelled.
+      await service.recordOutcome(deliveryId, 'sent', NOW);
+      expect(storage.state.outbox[deliveryId]).toMatchObject({
+        status: 'cancelled',
+        attempts: 1,
+        leaseUntil: null,
+      });
+
+      // The next tick sends the notice, and only the notice.
+      const next = await service.claimDue(NOW, LEASE_MS);
+      expect(next.map((r) => r.deliveryId)).toEqual([notice?.deliveryId]);
+
+      // The device's late ack of the confirmation does not reopen it.
+      const token = storage.state.outbox[deliveryId].ackToken;
+      await expect(service.ack(deliveryId, token, NOW)).resolves.toBe(
+        'cancelled',
+      );
+      expect(storage.state.outbox[deliveryId].status).toBe('cancelled');
+    });
+
+    it('an expired lease on the confirmation (crashed send) does not block the notice', async () => {
+      seed('c1', { status: 'cancelled', leaseUntil: at(-1) });
+      seed('n1', { kind: 'cancellation', waitsFor: 'c1' });
+
+      const claimed = await service.claimDue(NOW, LEASE_MS);
+
+      expect(claimed.map((r) => r.deliveryId)).toEqual(['n1']);
+    });
+  });
 });

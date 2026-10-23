@@ -4,6 +4,7 @@ import { PubSubTransport } from './pubsub.transport';
 
 const payload: DeliveryPayload = {
   deliveryId: 'd1',
+  kind: 'confirmation',
   confirmationCode: 'ABC123',
   reservationId: 'R1',
   guest: 'ana@example.com',

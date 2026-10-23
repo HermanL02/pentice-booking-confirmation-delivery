@@ -29,7 +29,7 @@ export class AckController {
   async ack(
     @Param('deliveryId') deliveryId: string,
     @Body() dto: AckDto,
-  ): Promise<{ status: 'acked' | 'already-acked' }> {
+  ): Promise<{ status: 'acked' | 'already-acked' | 'cancelled' }> {
     const result = await this.outbox.ack(
       deliveryId,
       dto.ackToken,

@@ -119,6 +119,7 @@ describe('BookingsService', () => {
     const code = storage.state.reservationIndex.R123;
 
     await expect(service.findByCode(code.toUpperCase())).resolves.toEqual({
+      status: 'active',
       reservationId: 'R123',
       guest: 'ana@example.com',
       confirmationCode: code,
@@ -145,6 +146,8 @@ describe('BookingsService', () => {
       guest: 'ana@example.com',
       ackToken: expect.stringMatching(/^[0-9a-f]{64}$/),
       status: 'pending',
+      kind: 'confirmation',
+      waitsFor: null,
       attempts: 0,
       nextAttemptAt: NOW.toISOString(),
       leaseUntil: null,
@@ -228,5 +231,49 @@ describe('BookingsService', () => {
     }
     expect(storage.state).toEqual(emptyState());
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  describe('cancel', () => {
+    const dto = { reservationId: 'R123', guest: 'ana@example.com' };
+    const notices = () =>
+      Object.values(storage.state.outbox).filter(
+        (r) => r.kind === 'cancellation',
+      );
+
+    it('throws NotFoundException for an unknown reservationId', async () => {
+      await expect(service.cancel('R-unknown')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(storage.state).toEqual(emptyState());
+    });
+
+    it('is idempotent: a repeat writes no second notice', async () => {
+      const { deliveryId } = await service.create(dto);
+
+      await service.cancel('R123');
+      await service.cancel('R123');
+
+      expect(storage.state.outbox[deliveryId].status).toBe('cancelled');
+      expect(notices()).toHaveLength(1);
+      const code = storage.state.reservationIndex.R123;
+      expect(storage.state.bookings[code]).toMatchObject({
+        cancelledAt: NOW.toISOString(),
+        cancellationDeliveryId: notices()[0].deliveryId,
+      });
+      await expect(service.findByCode(code)).resolves.toMatchObject({
+        status: 'cancelled',
+        delivery: { status: 'cancelled' },
+      });
+    });
+
+    it('leaves an acked confirmation acked and still notifies the guest', async () => {
+      const { deliveryId } = await service.create(dto);
+      storage.state.outbox[deliveryId].status = 'acked';
+
+      await service.cancel('R123');
+
+      expect(storage.state.outbox[deliveryId].status).toBe('acked');
+      expect(notices()).toHaveLength(1);
+    });
   });
 });

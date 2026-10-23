@@ -6,6 +6,8 @@ export interface NewOutboxRecordInput {
   confirmationCode: string;
   reservationId: string;
   guest: string;
+  kind?: OutboxRecord['kind'];
+  waitsFor?: string;
 }
 
 export function newOutboxRecord(
@@ -21,6 +23,8 @@ export function newOutboxRecord(
     guest: input.guest,
     ackToken,
     status: 'pending',
+    kind: input.kind ?? 'confirmation',
+    waitsFor: input.waitsFor ?? null,
     attempts: 0,
     nextAttemptAt: iso,
     leaseUntil: null,

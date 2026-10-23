@@ -4,6 +4,7 @@ import { InboxMessageDto } from './dto/inbox-message.dto';
 
 export interface InboxItem {
   deliveryId: string;
+  kind: 'confirmation' | 'cancellation';
   confirmationCode: string;
   reservationId: string;
   receivedAt: string;
@@ -43,6 +44,7 @@ export class GuestDeviceService {
     this.seen.add(msg.deliveryId);
     this.items.push({
       deliveryId: msg.deliveryId,
+      kind: msg.kind ?? 'confirmation',
       confirmationCode: msg.confirmationCode,
       reservationId: msg.reservationId,
       receivedAt: new Date().toISOString(),

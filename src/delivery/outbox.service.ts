@@ -9,6 +9,7 @@ import {
   type OutboxOutcome,
   type OutboxRecord,
   type StoragePort,
+  type StoreState,
 } from '../storage/storage.port';
 import { BackoffPolicy } from './backoff.policy';
 import {
@@ -19,7 +20,7 @@ import {
 const HISTORY_CAP = 50;
 
 export type AckResult =
-  'acked' | 'already-acked' | 'invalid-token' | 'not-found';
+  'acked' | 'already-acked' | 'cancelled' | 'invalid-token' | 'not-found';
 
 export interface OutboxListFilter {
   status?: OutboxRecord['status'];
@@ -60,7 +61,7 @@ export class OutboxService {
       for (const record of records) {
         if (
           !expired.has(record.deliveryId) &&
-          this.isClaimable(record, nowMs)
+          this.isClaimable(record, nowMs, draft.outbox)
         ) {
           record.leaseUntil = new Date(nowMs + leaseMs).toISOString();
           claimed.push(record);
@@ -80,7 +81,10 @@ export class OutboxService {
     const nowMs = now.getTime();
     return this.storage.mutate((draft) => {
       const record = own(draft.outbox, deliveryId);
-      if (record === undefined || !this.isClaimable(record, nowMs)) {
+      if (
+        record === undefined ||
+        !this.isClaimable(record, nowMs, draft.outbox)
+      ) {
         return null;
       }
       record.leaseUntil = new Date(nowMs + leaseMs).toISOString();
@@ -100,6 +104,13 @@ export class OutboxService {
       if (record.status === 'acked') {
         // Ack never reopens a delivery; outcomes are still counted.
         countAttempt(record, outcome, now, error);
+        return { record, flagged: false };
+      }
+      if (record.status === 'cancelled') {
+        // Same as acked, but the lease is still set: clearing it releases any
+        // record that waitsFor this one.
+        countAttempt(record, outcome, now, error);
+        record.leaseUntil = null;
         return { record, flagged: false };
       }
       const flagged = this.applyOutcome(record, outcome, now, error);
@@ -136,6 +147,7 @@ export class OutboxService {
       if (record === undefined) return 'not-found';
       if (!tokensMatch(record.ackToken, ackToken)) return 'invalid-token';
       if (record.status === 'acked') return 'already-acked';
+      if (record.status === 'cancelled') return 'cancelled';
       record.status = 'acked';
       record.ackedAt = now.toISOString();
       record.leaseUntil = null;
@@ -175,11 +187,23 @@ export class OutboxService {
     return own(state.outbox, deliveryId) ?? null;
   }
 
-  private isClaimable(record: OutboxRecord, nowMs: number): boolean {
+  private isClaimable(
+    record: OutboxRecord,
+    nowMs: number,
+    outbox: StoreState['outbox'],
+  ): boolean {
+    // A live lease (not just a set one) holds it back, so a crashed send
+    // cannot block the waiting record forever.
+    const waitingOn =
+      record.waitsFor === null ? undefined : own(outbox, record.waitsFor);
+    const blocked =
+      waitingOn?.leaseUntil != null &&
+      Date.parse(waitingOn.leaseUntil) >= nowMs;
     return (
       record.status === 'pending' &&
       record.leaseUntil === null &&
-      Date.parse(record.nextAttemptAt) <= nowMs
+      Date.parse(record.nextAttemptAt) <= nowMs &&
+      !blocked
     );
   }
 
